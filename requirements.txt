@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+dash
+dash-auth
+pandas
+numpy
+scikit-learn
+plotly
+ta
+websockets
+requests
+pyyaml
+flask
+technical-analysis

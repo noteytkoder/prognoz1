@@ -1,0 +1,36 @@
+auth:
+  password: qwerty63
+  username: admin
+data:
+  buffer_size: 50000
+  download_range: 1day
+  min_records: 60
+  simulation_train_period: 3600
+  train_interval: 30
+  volume_source: aggTrades
+  websocket_intervals:
+    1day: 1m
+    1hour: 1s
+    1month: 1m
+indicators:
+  rsi_window: 7
+  sma_window: 3
+model:
+  max_depth: null
+  min_candles: 1
+  min_hourly_candles: 1
+  n_estimators: 100
+  train_window_minutes: 60
+timezone: Europe/Moscow
+visual:
+  default_time_range: 1day
+  error_band_color: rgba(0,255,0,0.2)
+  error_band_min: 30
+  error_band_multiplier: 1.5
+  predicted_price_color: red
+  real_price_color: blue
+  show_error_band: true
+  stats_interval: 10
+  update_interval: 1000
+  volume_graph_height: 150
+  y_margin: 0.005
