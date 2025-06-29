@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Логи прогнозов BTC/USDT</title>
+  <link rel="stylesheet" href="/assets/logs.css" />
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body class="log-page">
+  <div class="container">
+    <h1>Логи прогнозов BTC/USDT</h1>
+    <div class="table-wrapper">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Время</th>
+            <th>Минутная</th>
+            <th>Часовая</th>
+          </tr>
+        </thead>
+        <tbody id="logs">
+          {{TABLE_ROWS}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    function reloadLogs() {
+      $.get('/logs/predictions.log', function(data) {
+        $('#logs').html($(data).find('#logs').html());
+      });
+    }
+    setInterval(reloadLogs, {{REFRESH_INTERVAL}});
+  </script>
+</body>
+</html>

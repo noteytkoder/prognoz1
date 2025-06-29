@@ -55,7 +55,7 @@ if __name__ == "__main__":
     dash_thread.start()
 
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
     except Exception as e:
         logger.error(f"Uvicorn error: {e}")
         sys.exit(1)

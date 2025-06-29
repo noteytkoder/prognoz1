@@ -2,26 +2,107 @@ from dash import Dash
 from app.logs.logger import setup_logger
 from dash_auth import BasicAuth
 from app.visual.components import create_layout
-from dash_auth import BasicAuth
 import secrets
 import yaml
+import os
+from flask import Response
+
+# Загружаем конфиг
 with open("app/config/config.yaml", "r") as f:
     config = yaml.safe_load(f)
+
 DASH_AUTH_CREDENTIALS = {
     config["auth"]["username"]: config["auth"]["password"]
 }
 
-
-SECRET_KEY = secrets.token_hex(16)  # Генерируем случайный ключ
+SECRET_KEY = secrets.token_hex(16)
 logger = setup_logger()
-dash_app = Dash(__name__, assets_folder="../static")
-dash_app.server.secret_key = SECRET_KEY  # Устанавливаем секретный ключ
+
+dash_app = Dash(__name__, assets_folder="../../static")
+dash_app.server.secret_key = SECRET_KEY
 BasicAuth(dash_app, DASH_AUTH_CREDENTIALS)
 
 dash_app.layout = create_layout()
 
+from flask import send_from_directory
+
+
+@dash_app.server.route('/logs/predictions', methods=['GET'])
+def serve_predictions_log():
+    try:
+        log_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.log')
+        )
+        # logger.info(f"Attempting to serve log file: {log_file_path}")
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Log file not found at {log_file_path}")
+            return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_content = f.readlines()
+
+        log_content = log_content[-1:]  # Только последняя строка
+
+        # Загружаем HTML-шаблон
+        TEMPLATE_PATH = os.path.join(
+            os.path.dirname(__file__),
+            '..', '..', 'app', 'templates', 'logs_template.html'
+        )
+        with open(TEMPLATE_PATH, encoding='utf-8') as f:
+            template = f.read()
+
+        table_rows = ""
+        for line in log_content:
+            try:
+                parts = line.strip().split(", ")
+                if len(parts) != 3:
+                    continue
+                timestamp = parts[0]
+                min_pred = parts[1].split("=")[1]
+                hour_pred = parts[2].split("=")[1]
+                table_rows += f"""
+          <tr>
+            <td>{timestamp}</td>
+            <td>{min_pred}</td>
+            <td>{hour_pred}</td>
+          </tr>
+        """
+            except Exception as e:
+                logger.warning(f"Failed to parse log line: {line.strip()}, error: {e}")
+
+        html_content = template.replace('{{TABLE_ROWS}}', table_rows)
+        html_content = html_content.replace('{{REFRESH_INTERVAL}}', str(config["visual"]["log_refresh_interval"]))
+
+        return Response(html_content, mimetype='text/html')
+
+    except Exception as e:
+        logger.error(f"Error serving predictions.log: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@dash_app.server.route('/logs/logtotal', methods=['GET'])
+def serve_logtotal():
+    try:
+        log_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'app.log')
+        )
+        # logger.info(f"Serving full log file: {log_file_path}")
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Log file not found at {log_file_path}")
+            return Response("Лог отсутствует", status=404, mimetype='text/plain')
+
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+
+        return Response(log_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving logtotal: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+
 def start_dash():
-    print(dash_app.callback_map.keys())
     """Запуск сервера Dash"""
     try:
         dash_app.run(port=8050, host="0.0.0.0")

@@ -27,6 +27,7 @@ visual:
   error_band_color: rgba(0,255,0,0.2)
   error_band_min: 30
   error_band_multiplier: 1.5
+  log_refresh_interval: 5000
   predicted_price_color: red
   real_price_color: blue
   show_error_band: true

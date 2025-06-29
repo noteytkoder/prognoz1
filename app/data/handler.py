@@ -12,7 +12,9 @@ from app.model.train import train_model, train_hourly_model, predict, predict_ho
 from app.model.indicators import calculate_indicators
 from app.config.manager import load_config
 from threading import Lock
+from app.logs.logger import setup_predictions_logger
 
+predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()  # Добавленная блокировка
 logger = setup_logger()
 config = load_config()
@@ -261,6 +263,8 @@ async def start_binance_websocket():
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
 
+
+
 def get_latest_features(forecast_range="1min"):
     """Получение последних признаков для прогноза"""
     global predictions, last_pred_time
@@ -271,16 +275,15 @@ def get_latest_features(forecast_range="1min"):
         df = pd.DataFrame(data_buffer.copy())
     try:
         df = df.drop_duplicates(subset=["timestamp"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"])  # Убедимся, что timestamp в формате datetime
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
         df.set_index("timestamp", inplace=True)
         df = df.sort_index()
         interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
         interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
 
-        # Ресэмплинг с проверкой на несоответствие длин
         df = df.resample(f"{interval_seconds.get(interval, 1)}s").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).interpolate(method="linear").dropna()  # Удаляем NaN после интерполяции
+        }).interpolate(method="linear").dropna()
         logger.debug(f"Resampled DataFrame shape: {df.shape}")
 
         df = calculate_indicators(df)
@@ -303,26 +306,28 @@ def get_latest_features(forecast_range="1min"):
         current_time = time.time()
         if current_time - last_pred_time >= interval_seconds.get(interval, 1):
             features = df_min.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
-            features_df = pd.DataFrame([features])  # Создаем DataFrame для предсказания
-            if forecast_range == "1min":
-                prediction = predict(features_df)
-                pred_file = "predictions_minute.csv"
-            else:
-                prediction = predict_hourly(features_df)
-                pred_file = "predictions_hourly.csv"
+            features_df = pd.DataFrame([features])
             
-            if prediction is not None:
-                pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+            # Получаем оба прогноза (1 мин и 1 час)
+            min_prediction = predict(features_df)
+            hour_prediction = predict_hourly(features_df)
+            
+            pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+            if min_prediction is not None and hour_prediction is not None:
+                # Записываем прогнозы в лог
+                predictions_logger.info("", extra={"min_pred": min_prediction, "hour_pred": hour_prediction})
+                
                 predictions.append({
                     "timestamp": pred_timestamp,
                     "actual_price": actual_price,
-                    "predicted_price": prediction,
-                    "error": abs(actual_price - prediction)
+                    "predicted_price": min_prediction if forecast_range == "1min" else hour_prediction,
+                    "error": abs(actual_price - (min_prediction if forecast_range == "1min" else hour_prediction))
                 })
                 # Сохраняем предсказания с блокировкой
                 with prediction_file_lock:
+                    pred_file = "predictions_minute.csv" if forecast_range == "1min" else "predictions_hourly.csv"
                     pd.DataFrame(predictions).to_csv(pred_file, index=False)
-                logger.info(f"Prediction saved to {pred_file}: actual={actual_price}, predicted={prediction}")
+                # logger.info(f"Prediction saved to {pred_file}: actual={actual_price}, predicted={(min_prediction if forecast_range == '1min' else hour_prediction)}")
             last_pred_time = current_time
         
         return df_min.iloc[-1] if forecast_range == "1min" else df_hour.iloc[-1]
