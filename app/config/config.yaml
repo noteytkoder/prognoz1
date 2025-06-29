@@ -32,6 +32,6 @@ visual:
   real_price_color: blue
   show_error_band: true
   stats_interval: 10
-  update_interval: 1000
+  update_interval: 10000
   volume_graph_height: 150
   y_margin: 0.005

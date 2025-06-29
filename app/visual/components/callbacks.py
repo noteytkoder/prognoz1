@@ -29,7 +29,6 @@ logger = setup_logger()
     Input("websocket-interval-1month", "value"),
 )
 def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_interval_1month):
-    """Обновление интервала графика на основе websocket_intervals"""
     interval_map = {"1s": 1000, "1m": 60000, "15m": 15*60000, "1h": 60*60000}
     new_config = load_config()
     
@@ -65,10 +64,9 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
     prevent_initial_call=True
 )
 def update_graph(n, train_period, show_candles, show_error_band, forecast_range, autoscale_range, relayout_data, stored_layout):
-    """Обновление графиков"""
     global last_stats_time, last_mse, last_mae, current_layout
     logger.debug(f"Starting update_graph, n_intervals={n}, forecast_range={forecast_range}, autoscale_range={autoscale_range}")
-    
+
     try:
         if train_period and train_period != config["model"]["train_window_minutes"]:
             new_config = load_config()
@@ -106,6 +104,19 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         logger.debug(f"Aggregated DataFrame shape: {df.shape}, columns: {df.columns}")
         df.reset_index(inplace=True)
         
+        # Проверка актуальности данных
+        latest_timestamp = df["timestamp"].max()
+        current_time = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+        if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 2:
+            logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}")
+            fig = go.Figure()
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                text="Данные устарели. Пожалуйста, проверьте соединение.",
+                showarrow=False, font=dict(size=16, color="red")
+            )
+            return fig, go.Figure(), {"display": "none"}, stored_layout
+        
         gaps = df["timestamp"].diff().dt.total_seconds()
         if gaps.max() > interval_seconds.get(interval, 1) * 1.5:
             logger.warning(f"Detected gaps in data: max gap {gaps.max()} seconds")
@@ -114,7 +125,6 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         ranges = {"1hour": pd.Timedelta(hours=1), "1day": pd.Timedelta(days=1), "1month": pd.Timedelta(days=30)}
         default_time_delta = ranges.get(config["data"]["download_range"], pd.Timedelta(days=1))
         
-        # Установка временного диапазона для автоскейлинга
         if autoscale_range == "10min":
             time_delta = pd.Timedelta(minutes=10)
             df = df[df["timestamp"] >= last_time - time_delta]
@@ -123,7 +133,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             time_delta = pd.Timedelta(hours=1)
             df = df[df["timestamp"] >= last_time - time_delta]
             x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
-        else:  # "full"
+        else:
             time_delta = default_time_delta
             if stored_layout and "xaxis.range[0]" in stored_layout:
                 x_range = [pd.to_datetime(stored_layout["xaxis.range[0]"]), pd.to_datetime(stored_layout["xaxis.range[1]"])]
@@ -145,7 +155,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
 
         show_band = "show" in (show_error_band or [])
 
-        fig = go.Figure()  # Только один график, без подграфиков
+        fig = go.Figure()
         
         if show_candles:
             fig.add_trace(go.Candlestick(
@@ -181,6 +191,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                 with prediction_file_lock:
                     pred_df = pd.read_csv(pred_file, encoding='utf-8')
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"])
+                pred_df = pred_df[pred_df["timestamp"] >= (current_time - pd.Timedelta(hours=1))]  # Фильтруем старые предсказания
                 if len(pred_df) > 1:
                     mse = np.mean((pred_df["actual_price"] - pred_df["predicted_price"]) ** 2)
                     mae = np.mean(np.abs(pred_df["actual_price"] - pred_df["predicted_price"]))
@@ -283,7 +294,10 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                         tickangle=45
                     )
                 )
-        
+        #debug
+        logger.debug(f"data_buffer last 5 records: {data_buffer[-5:]}")
+        logger.debug(f"pred_df last 5 records: {pred_df.tail(5)}")
+        #    
         logger.debug("Graph updated successfully")
         return fig, pred_fig, pred_style, stored_layout
     
