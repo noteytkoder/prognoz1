@@ -24,13 +24,14 @@
       </table>
     </div>
   </div>
-  <script>
-    function reloadLogs() {
-      $.get('/logs/predictions.log', function(data) {
-        $('#logs').html($(data).find('#logs').html());
-      });
-    }
-    setInterval(reloadLogs, {{REFRESH_INTERVAL}});
-  </script>
+ <script>
+  function reloadLogs() {
+    $.get('/logs/predictions', function(data) {
+      $('#logs').html($(data).find('#logs').html());
+    });
+  }
+  setInterval(reloadLogs, {{REFRESH_INTERVAL}});
+  $(document).ready(reloadLogs);
+</script>
 </body>
 </html>

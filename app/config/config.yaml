@@ -2,7 +2,7 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 50000
+  buffer_size: 20000
   download_range: 1day
   min_records: 60
   simulation_train_period: 3600
@@ -27,11 +27,11 @@ visual:
   error_band_color: rgba(0,255,0,0.2)
   error_band_min: 30
   error_band_multiplier: 1.5
-  log_refresh_interval: 5000
+  log_refresh_interval: 70000
   predicted_price_color: red
   real_price_color: blue
   show_error_band: true
   stats_interval: 10
-  update_interval: 10000
+  update_interval: 60000
   volume_graph_height: 150
   y_margin: 0.005
