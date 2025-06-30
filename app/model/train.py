@@ -35,7 +35,7 @@ def train_model(df, n_estimators=None, max_depth=None):
         y_pred = model.predict(X)
         r2 = r2_score(y, y_pred)
         minute_model = model
-        logger.info(f"Minute model trained, R²={r2:.4f}, samples={len(X)}")
+        logger.info(f"Minute model trained, R^2={r2:.4f}, samples={len(X)}")
     except Exception as e:
         logger.error(f"Error training minute model: {e}")
 
@@ -63,7 +63,7 @@ def train_hourly_model(df):
         y_pred = model.predict(X)
         r2 = r2_score(y, y_pred)
         hourly_model = model
-        logger.info(f"Hourly model trained, R²={r2:.4f}, samples={len(X)}")
+        logger.info(f"Hourly model trained, R^2={r2:.4f}, samples={len(X)}")
     except Exception as e:
         logger.error(f"Error training hourly model: {e}")
 

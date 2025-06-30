@@ -14,6 +14,7 @@ from app.model.indicators import calculate_indicators
 from app.config.manager import load_config
 from threading import Lock
 from app.logs.logger import setup_predictions_logger
+from pathlib import Path
 
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
@@ -25,6 +26,8 @@ buffer_lock = threading.Lock()
 last_train_time = 0
 predictions = []
 last_pred_time = 0
+last_kline_time = 0
+RESTART_FLAG = Path("restart.flag")
 
 def process_timestamp(timestamp_ms):
     """Преобразование времени в MSK"""
@@ -43,7 +46,7 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
             logger.error(f"Invalid interval: {interval}")
             interval = "1s"
         range_ms = ranges.get(range_type, ranges["1day"])
-        interval_seconds = {"1s": 1, "1m": 60, "3m": 3*60, "15m": 15*60, "1h": 60*60, "1d": 24*60*60}
+        interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
         expected_records = range_ms // (interval_seconds.get(interval, 1) * 1000)
         
         end_time = end_time or int(time.time() * 1000)
@@ -54,8 +57,15 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
         
         while start_time < end_time:
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&startTime={start_time}&endTime={end_time}&limit={limit}"
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
+            try:
+                response = requests.get(url, timeout=15)
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 429:
+                    logger.warning("Rate limit exceeded, sleeping for 60 seconds")
+                    await asyncio.sleep(60)
+                    continue
+                raise
             new_klines = response.json()
             if not new_klines:
                 logger.warning(f"No more data for {range_type} at start_time={start_time}")
@@ -66,7 +76,7 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
                     last_timestamp = kline[0]
             logger.info(f"Fetched {len(new_klines)} records for {range_type}, total: {len(klines)}")
             start_time = last_timestamp + (interval_seconds.get(interval, 1) * 1000)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.5)
         
         if not klines:
             logger.error(f"No historical data fetched for {range_type}")
@@ -123,98 +133,105 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
         logger.error(f"Error fetching historical data: {e}")
 
 async def check_network():
-    while True:
-        try:
-            response = requests.get("https://api.binance.com/api/v3/ping", timeout=5)
-            if response.status_code == 200:
-                logger.info("Network connection to Binance API is stable")
-                return True
-            else:
-                logger.warning("Network connection to Binance API failed")
-                return False
-        except Exception as e:
-            logger.error(f"Network check failed: {e}")
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ping", timeout=5)
+        if response.status_code == 200:
+            logger.info("Network connection to Binance API is stable")
+            return True
+        else:
+            logger.warning("Network connection to Binance API failed")
             return False
-        await asyncio.sleep(10)
+    except Exception as e:
+        logger.error(f"Network check failed: {e}")
+        return False
+
+async def monitor_websocket():
+    """Периодическая проверка активности WebSocket"""
+    global last_kline_time
+    while True:
+        current_time = time.time()
+        diff = current_time - last_kline_time if last_kline_time else 0
+        logger.debug(f"Monitor WebSocket: last_kline_time={last_kline_time}, current_time={current_time}, diff={diff}")
+        if last_kline_time and diff > 120:  # Уменьшено до 2 минут для быстрого реагирования
+            logger.error("No Kline data received for 2 minutes, restarting WebSocket")
+            RESTART_FLAG.touch()
+            os._exit(0)
+        elif not last_kline_time:
+            logger.debug("last_kline_time not initialized, waiting for first Kline data")
+        await asyncio.sleep(30)
 
 async def start_binance_websocket():
+    global data_buffer, trade_buffer, last_train_time, last_kline_time
     await check_network()
-    """Получение данных через WebSocket Binance"""
-    global data_buffer, trade_buffer, last_train_time
     range_type = config["data"]["download_range"]
     interval = config["data"]["websocket_intervals"].get(range_type, "1s")
     if interval not in ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]:
         logger.error(f"Invalid interval: {interval}")
         interval = "1s"
-    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"  # Изменён порт на 443 для стабильности
+    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
     trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
     message_count = 0
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
     reconnect_delay = 5
     max_reconnect_delay = 60
-    max_gap_seconds = 300  # Максимальный допустимый гэп
+    max_gap_seconds = 300
 
     async def handle_kline():
+        global last_kline_time
         nonlocal message_count, reconnect_delay
         last_timestamp = None
         while True:
             try:
-                async with websockets.connect(kline_uri, ping_interval=60, ping_timeout=80) as ws:
+                async with websockets.connect(kline_uri, ping_interval=20, ping_timeout=30, max_size=None) as ws:
                     reconnect_delay = 5
+                    logger.info(f"Kline WebSocket connected to {kline_uri}")
                     while True:
-                        message = await ws.recv()
-                        data = json.loads(message)
-                        if "k" not in data:
-                            continue
-                        kline = data["k"]
-                        timestamp = process_timestamp(kline["t"])
-                        close_price = float(kline["c"])
-                        
-                        with buffer_lock:
-                            if last_timestamp and (timestamp - last_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 1.5:
-                                gap_seconds = (timestamp - last_timestamp).total_seconds()
-                                logger.warning(f"WebSocket gap detected: {gap_seconds} seconds")
-                                if gap_seconds > max_gap_seconds:
-                                    logger.info(f"Large gap detected ({gap_seconds}s), fetching historical data")
-                                    await fetch_historical_data(
-                                        range_type=range_type,
-                                        start_time=int(last_timestamp.timestamp() * 1000),
-                                        end_time=int(timestamp.timestamp() * 1000)
-                                    )
-                                    last_timestamp = timestamp
-                                    continue
-                                
-                                current_time = last_timestamp + pd.Timedelta(seconds=interval_seconds.get(interval, 1))
-                                while current_time < timestamp:
-                                    data_buffer.append({
-                                        "timestamp": current_time,
-                                        "open": close_price,
-                                        "high": close_price,
-                                        "low": close_price,
-                                        "close": close_price,
-                                        "volume": 0
-                                    })
-                                    current_time += pd.Timedelta(seconds=interval_seconds.get(interval, 1))
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=60)  # Таймаут 1 минута
+                            data = json.loads(message)
+                            if "k" not in data:
+                                logger.debug("Skipping non-kline message")
+                                continue
+                            kline = data["k"]
+                            timestamp = process_timestamp(kline["t"])
+                            close_price = float(kline["c"])
                             
-                            cutoff_time = timestamp - pd.Timedelta(seconds=config["data"]["buffer_size"] * interval_seconds.get(interval, 1))
-                            data_buffer[:] = [d for d in data_buffer if d["timestamp"] >= cutoff_time]
-                            
-                            data_buffer.append({
-                                "timestamp": timestamp,
-                                "open": float(kline["o"]),
-                                "high": float(kline["h"]),
-                                "low": float(kline["l"]),
-                                "close": close_price,
-                                "volume": float(kline["v"])  # Используем volume из Kline
-                            })
-                            last_timestamp = timestamp
-                            logger.debug(f"Added kline to data_buffer: timestamp={timestamp}, close={close_price}, buffer_size={len(data_buffer)}")
-                        
-                        message_count += 1
-                        if message_count % 100 == 0:
                             with buffer_lock:
-                                total_records = len(data_buffer)
-                            logger.info(f"Received {total_records} kline records, last_close: {close_price}")
+                                # Удаляем дубликаты с таким же timestamp
+                                data_buffer[:] = [d for d in data_buffer if d["timestamp"] != timestamp]
+                                
+                                cutoff_time = timestamp - pd.Timedelta(seconds=config["data"]["buffer_size"] * interval_seconds.get(interval, 1))
+                                data_buffer[:] = [d for d in data_buffer if d["timestamp"] >= cutoff_time]
+                                
+                                data_buffer.append({
+                                    "timestamp": timestamp,
+                                    "open": float(kline["o"]),
+                                    "high": float(kline["h"]),
+                                    "low": float(kline["l"]),
+                                    "close": close_price,
+                                    "volume": float(kline["v"])
+                                })
+                                last_timestamp = timestamp
+                                last_kline_time = time.time()
+                                logger.debug(f"Added kline to data_buffer: timestamp={timestamp}, close={close_price}, buffer_size={len(data_buffer)}")
+                            
+                            message_count += 1
+                            if message_count % 100 == 0:
+                                with buffer_lock:
+                                    total_records = len(data_buffer)
+                                logger.info(f"Received {total_records} kline records, last_close: {close_price}")
+                            
+                            with buffer_lock:
+                                if len(data_buffer) > config["data"]["buffer_size"] * 1.5:
+                                    logger.warning(f"Data buffer size {len(data_buffer)} exceeds limit, clearing old data")
+                                    data_buffer[:] = data_buffer[-config["data"]["buffer_size"]:]
+                        
+                        except asyncio.TimeoutError:
+                            logger.error("Kline WebSocket timeout after 60 seconds, reconnecting...")
+                            raise
+                        except Exception as e:
+                            logger.error(f"Kline WebSocket inner error: {e}")
+                            raise
             except Exception as e:
                 logger.error(f"Kline WebSocket error: {e}, reconnecting in {reconnect_delay} seconds...")
                 await asyncio.sleep(reconnect_delay)
@@ -224,60 +241,46 @@ async def start_binance_websocket():
         nonlocal reconnect_delay
         while True:
             try:
-                async with websockets.connect(trade_uri, ping_interval=60, ping_timeout=80) as ws:
+                async with websockets.connect(trade_uri, ping_interval=20, ping_timeout=30, max_size=None) as ws:
                     reconnect_delay = 5
+                    logger.info(f"AggTrade WebSocket connected to {trade_uri}")
                     while True:
-                        message = await ws.recv()
-                        data = json.loads(message)
-                        timestamp = process_timestamp(data["T"])
-                        quantity = float(data["q"])
-                        with buffer_lock:
-                            trade_buffer.append({"timestamp": timestamp, "quantity": quantity})
-                            if len(trade_buffer) > config["data"]["buffer_size"]:
-                                trade_buffer.pop(0)
-                            trade_df = pd.DataFrame(trade_buffer)
-                            trade_df = trade_df.groupby(trade_df["timestamp"].dt.floor("s"))["quantity"].sum().reset_index()
-                            for _, row in trade_df.iterrows():
-                                for item in data_buffer:
-                                    if abs((item["timestamp"] - row["timestamp"]).total_seconds()) < interval_seconds.get(interval, 1):
-                                        item["volume"] = row["quantity"]
-                                        logger.debug(f"Updated volume for timestamp={item['timestamp']}, volume={row['quantity']}")
-                                        break
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=60)  # Таймаут 1 минута
+                            data = json.loads(message)
+                            timestamp = process_timestamp(data["T"])
+                            quantity = float(data["q"])
+                            with buffer_lock:
+                                trade_buffer.append({"timestamp": timestamp, "quantity": quantity})
+                                if len(trade_buffer) > config["data"]["buffer_size"]:
+                                    trade_buffer.pop(0)
+                                trade_df = pd.DataFrame(trade_buffer)
+                                trade_df = trade_df.groupby(trade_df["timestamp"].dt.floor("s"))["quantity"].sum().reset_index()
+                                for _, row in trade_df.iterrows():
+                                    for item in data_buffer:
+                                        if abs((item["timestamp"] - row["timestamp"]).total_seconds()) < interval_seconds.get(interval, 1):
+                                            item["volume"] = row["quantity"]
+                                            # logger.debug(f"Updated volume for timestamp={item['timestamp']}, volume={row['quantity']}")
+                                            break
+                        except asyncio.TimeoutError:
+                            logger.error("AggTrade WebSocket timeout after 60 seconds, reconnecting...")
+                            raise
+                        except Exception as e:
+                            logger.error(f"AggTrade WebSocket inner error: {e}")
+                            raise
             except Exception as e:
                 logger.error(f"AggTrade WebSocket error: {e}, reconnecting in {reconnect_delay} seconds...")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
     
-    tasks = [handle_kline(), handle_agg_trade()]
+    tasks = [handle_kline(), handle_agg_trade(), monitor_websocket()]  # Убедимся, что monitor_websocket включена
     
     try:
         await asyncio.gather(*tasks)
-        if len(data_buffer) >= config["data"]["min_records"] and time.time() - last_train_time >= config["data"]["train_interval"]:
-            with buffer_lock:
-                df = pd.DataFrame(data_buffer)
-            df = df.drop_duplicates(subset=["timestamp"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df.set_index("timestamp", inplace=True)
-            df = df.sort_index()
-            df = df.interpolate(method="linear").dropna()
-            df = calculate_indicators(df)
-            
-            df_min = df.resample("1min").agg({
-                "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-            }).interpolate(method="linear").dropna()
-            df_min = calculate_indicators(df_min)
-            train_model(df_min)
-            
-            df_hour = df.resample("1h").agg({
-                "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-            }).interpolate(method="linear").dropna()
-            df_hour = calculate_indicators(df_hour)
-            train_hourly_model(df_hour)
-            
-            last_train_time = time.time()
-            logger.info("Models retrained")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        RESTART_FLAG.touch()
+        os._exit(0)
 
 def get_latest_features(forecast_range="1min"):
     """Получение последних признаков для прогноза"""
@@ -296,17 +299,16 @@ def get_latest_features(forecast_range="1min"):
         interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
         interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
 
-        # Проверка актуальности данных
         latest_timestamp = df.index.max()
         current_time = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
         if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 2:
-            logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}")
+            logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}, data_buffer_last={data_buffer[-5:]}")
             return None
 
         df = df.resample(f"{interval_seconds.get(interval, 1)}s").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
-        logger.debug(f"Resampled DataFrame shape: {df.shape}")
+        logger.debug(f"Resampler shape: {df.shape}, last_timestamp={df.index.max()}")
 
         df = calculate_indicators(df)
         
@@ -341,7 +343,7 @@ def get_latest_features(forecast_range="1min"):
                     "timestamp": pred_timestamp,
                     "actual_price": actual_price,
                     "predicted_price": min_prediction if forecast_range == "1min" else hour_prediction,
-                    "error": abs(actual_price - (min_prediction if forecast_range == "1min" else hour_prediction))
+                    "error5": abs(actual_price - (min_prediction if forecast_range == "1min" else hour_prediction))
                 })
                 with prediction_file_lock:
                     pred_file = "predictions_minute.csv" if forecast_range == "1min" else "predictions_hourly.csv"
@@ -349,9 +351,6 @@ def get_latest_features(forecast_range="1min"):
                 logger.info(f"Prediction saved to {pred_file}: actual={actual_price}, predicted={(min_prediction if forecast_range == '1min' else hour_prediction)}")
             last_pred_time = current_time
         
-        #debug
-        logger.debug(f"data_buffer last 5 records: {data_buffer[-5:]}")
-        #
         return df_min.iloc[-1] if forecast_range == "1min" else df_hour.iloc[-1]
     except Exception as e:
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)

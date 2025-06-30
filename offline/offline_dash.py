@@ -878,4 +878,4 @@ def stop_simulation(n_clicks):
 # Запуск приложения
 if __name__ == "__main__":
     logger.info("Starting offline Dash application")
-    app.run(port=8051, debug=True)
+    app.run(host="0.0.0.0", port=8051, debug=True)

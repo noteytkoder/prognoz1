@@ -1,4 +1,4 @@
-# ЗАПУСКАТЬ ЧЕРЕЗ watcher.py
+# main.py
 import asyncio
 import uvicorn
 from fastapi import FastAPI
@@ -25,6 +25,7 @@ def run_websocket():
         loop.close()
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        RESTART_FLAG.touch()
         sys.exit(1)
 
 def run_dash():
@@ -32,6 +33,7 @@ def run_dash():
         start_dash()
     except Exception as e:
         logger.error(f"Dash error: {e}")
+        RESTART_FLAG.touch()
         sys.exit(1)
 
 def signal_handler(sig, frame):
@@ -58,4 +60,5 @@ if __name__ == "__main__":
         uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
     except Exception as e:
         logger.error(f"Uvicorn error: {e}")
+        RESTART_FLAG.touch()
         sys.exit(1)

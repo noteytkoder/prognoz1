@@ -10,14 +10,14 @@ def run():
         if RESTART_FLAG.exists():
             RESTART_FLAG.unlink()
 
-        print("start main.py")
+        #print("Запускаем main.py")
         process = subprocess.Popen(["python", "main.py"])
         process.wait()
 
-        if RESTART_FLAG.exists():
-            print("restart request detected.")
+        if RESTART_FLAG.exists
+            #print("Обнаружен запрос на перезапуск.")
         else:
-            print("main.py completed without requesting a restart. Ending watcherwatcher.")
+            print("main.py завершён без запроса перезапуска. Завершаем watcher.")
             break
 
         time.sleep(2)
