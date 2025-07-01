@@ -9,13 +9,15 @@
 <body class="log-page">
   <div class="container">
     <h1>Логи прогнозов BTC/USDT</h1>
+
     <div class="table-wrapper">
       <table class="log-table">
         <thead>
           <tr>
             <th>Время</th>
-            <th>Минутная</th>
-            <th>Часовая</th>
+            <th>Цена</th>
+            <th>Минутная (%)</th>
+            <th>Часовая (%)</th>
           </tr>
         </thead>
         <tbody id="logs">
@@ -23,15 +25,42 @@
         </tbody>
       </table>
     </div>
+
+    <div class="refresh-form-wrapper">
+      <h2>Настройки обновления</h2>
+      <form id="refresh-form">
+        <label for="refresh-interval">Интервал обновления (сек):</label>
+        <input type="number" id="refresh-interval" value="{{REFRESH_INTERVAL_SEC}}" min="1" required>
+        <button type="submit">Применить</button>
+      </form>
+      <p id="current-interval">Текущий интервал обновления: {{CURRENT_INTERVAL_SEC}} секунд</p>
+    </div>
   </div>
- <script>
-  function reloadLogs() {
-    $.get('/logs/predictions', function(data) {
-      $('#logs').html($(data).find('#logs').html());
+
+  <script>
+    let refreshTimer = setInterval(reloadLogs, {{REFRESH_INTERVAL}});
+    
+    function reloadLogs() {
+      $.get('/logs/predictions', function(data) {
+        const newLogs = $(data).find('#logs').html();
+        $('#logs').html(newLogs);
+      });
+    }
+
+    $(document).ready(function() {
+      $('#refresh-form').on('submit', function(event) {
+        event.preventDefault();
+        const newIntervalSec = parseInt($('#refresh-interval').val());
+        if (isNaN(newIntervalSec) || newIntervalSec < 1) {
+          alert('Введите число больше или равно 1');
+          return;
+        }
+        clearInterval(refreshTimer);
+        refreshTimer = setInterval(reloadLogs, newIntervalSec * 1000);
+        document.getElementById('current-interval').innerText = `Текущий интервал обновления: ${newIntervalSec} секунд`;
+      });
+      reloadLogs();
     });
-  }
-  setInterval(reloadLogs, {{REFRESH_INTERVAL}});
-  $(document).ready(reloadLogs);
-</script>
+  </script>
 </body>
 </html>
