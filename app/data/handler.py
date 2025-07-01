@@ -25,6 +25,8 @@ data_buffer = deque(maxlen=config["data"]["buffer_size"])
 trade_buffer = deque(maxlen=config["data"]["buffer_size"])
 raw_queue = asyncio.Queue()
 
+buffer_lock = threading.Lock() # заглушка
+
 last_train_time = 0
 predictions = []
 last_pred_time = 0

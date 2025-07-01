@@ -295,8 +295,8 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     )
                 )
         #debug
-        logger.debug(f"data_buffer last 5 records: {data_buffer[-5:]}")
-        logger.debug(f"pred_df last 5 records: {pred_df.tail(5)}")
+        #logger.debug(f"data_buffer last 5 records: {data_buffer[-5:]}")
+        #logger.debug(f"pred_df last 5 records: {pred_df.tail(5)}")
         #    
         logger.debug("Graph updated successfully")
         return fig, pred_fig, pred_style, stored_layout
