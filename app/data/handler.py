@@ -1,4 +1,3 @@
-# handler.py
 import pandas as pd
 import websockets
 import json
@@ -8,21 +7,24 @@ import requests
 import pytz
 import threading
 import os
-from app.logs.logger import setup_logger
+from collections import deque
+from app.logs.logger import setup_logger, setup_predictions_logger
 from app.model.train import train_model, train_hourly_model, predict, predict_hourly
 from app.model.indicators import calculate_indicators
 from app.config.manager import load_config
 from threading import Lock
-from app.logs.logger import setup_predictions_logger
 from pathlib import Path
 
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
 logger = setup_logger()
 config = load_config()
-data_buffer = []
-trade_buffer = []
-buffer_lock = threading.Lock()
+
+# Buffers using deque with maxlen
+data_buffer = deque(maxlen=config["data"]["buffer_size"])
+trade_buffer = deque(maxlen=config["data"]["buffer_size"])
+raw_queue = asyncio.Queue()
+
 last_train_time = 0
 predictions = []
 last_pred_time = 0
@@ -145,142 +147,109 @@ async def check_network():
         logger.error(f"Network check failed: {e}")
         return False
 
-async def monitor_websocket():
-    """Периодическая проверка активности WebSocket"""
+# Producer: listens to WebSocket and puts raw JSON into queue
+async def producer_ws(uri, name, raw_queue):
     global last_kline_time
+    reconnect_delay = 5
     while True:
-        current_time = time.time()
-        diff = current_time - last_kline_time if last_kline_time else 0
-        logger.debug(f"Monitor WebSocket: last_kline_time={last_kline_time}, current_time={current_time}, diff={diff}")
-        if last_kline_time and diff > 120:  # Уменьшено до 2 минут для быстрого реагирования
-            logger.error("No Kline data received for 2 minutes, restarting WebSocket")
-            RESTART_FLAG.touch()
-            os._exit(0)
-        elif not last_kline_time:
-            logger.debug("last_kline_time not initialized, waiting for first Kline data")
-        await asyncio.sleep(30)
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
+                logger.info(f"[{name}] Connected to {uri}")
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=60)
+                    await raw_queue.put((name, raw))
+                    if name == "kline":
+                        last_kline_time = time.time()
+        except Exception as e:
+            logger.error(f"[{name}] Error: {e}. Reconnecting in {reconnect_delay}s")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
 
-async def start_binance_websocket():
-    global data_buffer, trade_buffer, last_train_time, last_kline_time
-    await check_network()
-    range_type = config["data"]["download_range"]
-    interval = config["data"]["websocket_intervals"].get(range_type, "1s")
-    if interval not in ["1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]:
-        logger.error(f"Invalid interval: {interval}")
-        interval = "1s"
-    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
-    trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
+
+# Consumer: processes queue into buffer
+async def consumer_loop(raw_queue):
     message_count = 0
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
-    reconnect_delay = 5
-    max_reconnect_delay = 60
-    max_gap_seconds = 300
+    interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
+    last_timestamp = None
 
-    async def handle_kline():
-        global last_kline_time
-        nonlocal message_count, reconnect_delay
-        last_timestamp = None
-        while True:
-            try:
-                async with websockets.connect(kline_uri, ping_interval=20, ping_timeout=30, max_size=None) as ws:
-                    reconnect_delay = 5
-                    logger.info(f"Kline WebSocket connected to {kline_uri}")
-                    while True:
-                        try:
-                            message = await asyncio.wait_for(ws.recv(), timeout=60)  # Таймаут 1 минута
-                            data = json.loads(message)
-                            if "k" not in data:
-                                logger.debug("Skipping non-kline message")
-                                continue
-                            kline = data["k"]
-                            timestamp = process_timestamp(kline["t"])
-                            close_price = float(kline["c"])
-                            
-                            with buffer_lock:
-                                # Удаляем дубликаты с таким же timestamp
-                                data_buffer[:] = [d for d in data_buffer if d["timestamp"] != timestamp]
-                                
-                                cutoff_time = timestamp - pd.Timedelta(seconds=config["data"]["buffer_size"] * interval_seconds.get(interval, 1))
-                                data_buffer[:] = [d for d in data_buffer if d["timestamp"] >= cutoff_time]
-                                
-                                data_buffer.append({
-                                    "timestamp": timestamp,
-                                    "open": float(kline["o"]),
-                                    "high": float(kline["h"]),
-                                    "low": float(kline["l"]),
-                                    "close": close_price,
-                                    "volume": float(kline["v"])
-                                })
-                                last_timestamp = timestamp
-                                last_kline_time = time.time()
-                                logger.debug(f"Added kline to data_buffer: timestamp={timestamp}, close={close_price}, buffer_size={len(data_buffer)}")
-                            
-                            message_count += 1
-                            if message_count % 100 == 0:
-                                with buffer_lock:
-                                    total_records = len(data_buffer)
-                                logger.info(f"Received {total_records} kline records, last_close: {close_price}")
-                            
-                            with buffer_lock:
-                                if len(data_buffer) > config["data"]["buffer_size"] * 1.5:
-                                    logger.warning(f"Data buffer size {len(data_buffer)} exceeds limit, clearing old data")
-                                    data_buffer[:] = data_buffer[-config["data"]["buffer_size"]:]
-                        
-                        except asyncio.TimeoutError:
-                            logger.error("Kline WebSocket timeout after 60 seconds, reconnecting...")
-                            raise
-                        except Exception as e:
-                            logger.error(f"Kline WebSocket inner error: {e}")
-                            raise
-            except Exception as e:
-                logger.error(f"Kline WebSocket error: {e}, reconnecting in {reconnect_delay} seconds...")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+    while True:
+        try:
+            name, raw = await raw_queue.get()
+            data = json.loads(raw)
 
-    async def handle_agg_trade():
-        nonlocal reconnect_delay
-        while True:
-            try:
-                async with websockets.connect(trade_uri, ping_interval=20, ping_timeout=30, max_size=None) as ws:
-                    reconnect_delay = 5
-                    logger.info(f"AggTrade WebSocket connected to {trade_uri}")
-                    while True:
-                        try:
-                            message = await asyncio.wait_for(ws.recv(), timeout=60)  # Таймаут 1 минута
-                            data = json.loads(message)
-                            timestamp = process_timestamp(data["T"])
-                            quantity = float(data["q"])
-                            with buffer_lock:
-                                trade_buffer.append({"timestamp": timestamp, "quantity": quantity})
-                                if len(trade_buffer) > config["data"]["buffer_size"]:
-                                    trade_buffer.pop(0)
-                                trade_df = pd.DataFrame(trade_buffer)
-                                trade_df = trade_df.groupby(trade_df["timestamp"].dt.floor("s"))["quantity"].sum().reset_index()
-                                for _, row in trade_df.iterrows():
-                                    for item in data_buffer:
-                                        if abs((item["timestamp"] - row["timestamp"]).total_seconds()) < interval_seconds.get(interval, 1):
-                                            item["volume"] = row["quantity"]
-                                            # logger.debug(f"Updated volume for timestamp={item['timestamp']}, volume={row['quantity']}")
-                                            break
-                        except asyncio.TimeoutError:
-                            logger.error("AggTrade WebSocket timeout after 60 seconds, reconnecting...")
-                            raise
-                        except Exception as e:
-                            logger.error(f"AggTrade WebSocket inner error: {e}")
-                            raise
-            except Exception as e:
-                logger.error(f"AggTrade WebSocket error: {e}, reconnecting in {reconnect_delay} seconds...")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
-    
-    tasks = [handle_kline(), handle_agg_trade(), monitor_websocket()]  # Убедимся, что monitor_websocket включена
-    
+            if name == "kline":
+                if "k" not in data:
+                    continue
+                k = data["k"]
+                timestamp = process_timestamp(k["t"])
+                item = {
+                    "timestamp": timestamp,
+                    "open": float(k["o"]),
+                    "high": float(k["h"]),
+                    "low": float(k["l"]),
+                    "close": float(k["c"]),
+                    "volume": float(k["v"])
+                }
+
+                if last_timestamp and (timestamp - last_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 2:
+                    logger.warning(f"[consumer] GAP DETECTED: {timestamp} vs {last_timestamp}")
+
+                last_timestamp = timestamp
+                data_buffer.append(item)
+                message_count += 1
+
+                if message_count % 100 == 0:
+                    logger.info(f"[consumer] Klines processed: {message_count}, buffer size: {len(data_buffer)}")
+
+            elif name == "aggTrade":
+                timestamp = process_timestamp(data["T"])
+                quantity = float(data["q"])
+                trade_buffer.append({"timestamp": timestamp, "quantity": quantity})
+
+                # Update volumes in data_buffer
+                for candle in reversed(data_buffer):
+                    if abs((candle["timestamp"] - timestamp).total_seconds()) < interval_seconds.get(interval, 1):
+                        candle["volume"] = quantity
+                        break
+
+        except Exception as e:
+            logger.error(f"[consumer] Error: {e}")
+
+
+# Watchdog: monitors if kline data stops arriving
+async def watchdog():
+    global last_kline_time
+    while True:
+        await asyncio.sleep(30)
+        if last_kline_time and time.time() - last_kline_time > 120:
+            logger.error("[watchdog] No Kline data for 2 minutes — creating restart flag!")
+            RESTART_FLAG.touch()
+            os._exit(0)
+
+async def start_binance_websocket():
+    await check_network()
+
+    raw_queue = asyncio.Queue()
+
+    range_type = config["data"]["download_range"]
+    interval = config["data"]["websocket_intervals"].get(range_type, "1s")
+    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
+    trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
+
+    tasks = [
+        producer_ws(kline_uri, "kline", raw_queue),
+        producer_ws(trade_uri, "aggTrade", raw_queue),
+        consumer_loop(raw_queue),
+        watchdog(),
+    ]
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         RESTART_FLAG.touch()
         os._exit(0)
+
 
 def get_latest_features(forecast_range="1min"):
     """Получение последних признаков для прогноза"""

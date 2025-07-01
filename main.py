@@ -17,48 +17,68 @@ config = load_config()
 
 RESTART_FLAG = Path("restart.flag")
 
+
 def run_websocket():
+    """
+    Запускаем WebSocket в отдельном потоке с отдельным event loop.
+    """
     try:
+        logger.info("Starting Binance WebSocket thread with its own event loop")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(start_binance_websocket())
-        loop.close()
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket thread error: {e}", exc_info=True)
         RESTART_FLAG.touch()
         sys.exit(1)
 
+
 def run_dash():
+    """
+    Запуск Dash сервера. Тут нет asyncio, просто обычный запуск.
+    """
     try:
+        logger.info("Starting Dash server")
         start_dash()
     except Exception as e:
-        logger.error(f"Dash error: {e}")
+        logger.error(f"Dash thread error: {e}", exc_info=True)
         RESTART_FLAG.touch()
         sys.exit(1)
+
 
 def signal_handler(sig, frame):
     logger.info("Shutdown signal received, exiting")
     sys.exit(0)
 
-if __name__ == "__main__":
+
+def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
     logger.info("Starting application")
 
+    # Загрузка исторических данных до старта потоков
     try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(fetch_historical_data(config["data"]["download_range"]))
+        logger.info("Fetching historical data before starting services")
+        asyncio.run(fetch_historical_data(config["data"]["download_range"]))
     except Exception as e:
-        logger.error(f"Error fetching historical data: {e}")
+        logger.error(f"Error fetching historical data: {e}", exc_info=True)
 
-    websocket_thread = threading.Thread(target=run_websocket, daemon=True)
-    dash_thread = threading.Thread(target=run_dash, daemon=True)
+    # Потоки для WebSocket и Dash
+    websocket_thread = threading.Thread(target=run_websocket, daemon=True, name="WebSocketThread")
+    dash_thread = threading.Thread(target=run_dash, daemon=True, name="DashThread")
     websocket_thread.start()
     dash_thread.start()
 
+    # Uvicorn (FastAPI) на главном потоке
     try:
+        logger.info("Starting FastAPI server with Uvicorn")
         uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
     except Exception as e:
-        logger.error(f"Uvicorn error: {e}")
+        logger.error(f"Uvicorn error: {e}", exc_info=True)
         RESTART_FLAG.touch()
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
