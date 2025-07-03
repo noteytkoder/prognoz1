@@ -231,9 +231,7 @@ async def watchdog():
 
 async def start_binance_websocket():
     await check_network()
-
     raw_queue = asyncio.Queue()
-
     range_type = config["data"]["download_range"]
     interval = config["data"]["websocket_intervals"].get(range_type, "1s")
     kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
@@ -244,6 +242,7 @@ async def start_binance_websocket():
         producer_ws(trade_uri, "aggTrade", raw_queue),
         consumer_loop(raw_queue),
         watchdog(),
+        prediction_loop()
     ]
     try:
         await asyncio.gather(*tasks)
@@ -253,76 +252,116 @@ async def start_binance_websocket():
         os._exit(0)
 
 
-def get_latest_features(forecast_range="1min"):
-    """Получение последних признаков для прогноза"""
-    global predictions, last_pred_time
+cached_df = None
+last_buffer_update = 0
+
+def get_latest_features():
+    global cached_df, last_buffer_update
     with buffer_lock:
         if len(data_buffer) < config["data"]["min_records"]:
             logger.warning(f"Insufficient data: {len(data_buffer)} records")
             return None
+        
+        # Проверяем, обновился ли буфер
+        buffer_timestamp = data_buffer[-1]["timestamp"] if data_buffer else 0
+        if buffer_timestamp == last_buffer_update and cached_df is not None:
+            return cached_df["min"].iloc[-1], cached_df["hour"].iloc[-1], cached_df["min"]
         df = pd.DataFrame(data_buffer.copy())
-    
+        last_buffer_update = buffer_timestamp
+
     try:
         df = df.drop_duplicates(subset=["timestamp"])
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df.set_index("timestamp", inplace=True)
         df = df.sort_index()
+
         interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
         interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
 
         latest_timestamp = df.index.max()
         current_time = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
         if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 20:
-            logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}, data_buffer_last={data_buffer[-5:]}")
+            logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}")
             return None
 
         df = df.resample(f"{interval_seconds.get(interval, 1)}s").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
-        logger.debug(f"Resampler shape: {df.shape}, last_timestamp={df.index.max()}")
-
         df = calculate_indicators(df)
-        
+
         df_min = df.resample("1min").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df_min = calculate_indicators(df_min)
-        
+
         df_hour = df.resample("1h").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df_hour = calculate_indicators(df_hour)
-        
+
         if len(df_min) < config["model"]["min_candles"] or len(df_hour) < config["model"]["min_hourly_candles"]:
             logger.warning(f"Too few candles: min={len(df_min)}, hour={len(df_hour)}")
             return None
-        
-        actual_price = df_min.iloc[-1]["close"]
-        current_time = time.time()
-        if current_time - last_pred_time >= interval_seconds.get(interval, 1):
-            features = df_min.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
-            features_df = pd.DataFrame([features])
-            
-            min_prediction = predict(features_df)
-            hour_prediction = predict_hourly(features_df)
-            
-            pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
-            if min_prediction is not None and hour_prediction is not None:
-                predictions_logger.info("", extra={"min_pred": min_prediction, "hour_pred": hour_prediction})
-                
-                predictions.append({
-                    "timestamp": pred_timestamp,
-                    "actual_price": actual_price,
-                    "predicted_price": min_prediction if forecast_range == "1min" else hour_prediction,
-                    "error5": abs(actual_price - (min_prediction if forecast_range == "1min" else hour_prediction))
-                })
-                with prediction_file_lock:
-                    pred_file = "predictions_minute.csv" if forecast_range == "1min" else "predictions_hourly.csv"
-                    pd.DataFrame(predictions).to_csv(pred_file, index=False)
-                logger.info(f"Prediction saved to {pred_file}: actual={actual_price}, predicted={(min_prediction if forecast_range == '1min' else hour_prediction)}")
-            last_pred_time = current_time
-        
-        return df_min.iloc[-1] if forecast_range == "1min" else df_hour.iloc[-1]
+
+        cached_df = {"min": df_min, "hour": df_hour}
+        return df_min.iloc[-1], df_hour.iloc[-1], df_min
+
     except Exception as e:
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
+    
+async def prediction_loop():
+    global last_pred_time, predictions
+    interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
+    interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
+    wait_seconds = interval_seconds.get(interval, 1)
+    max_predictions = 100000  # Ограничение размера списка predictions
+
+    logger.info(f"Starting prediction_loop with interval: {wait_seconds} seconds")
+
+    while True:
+        start = time.time()
+        try:
+            result = get_latest_features()
+            if result is None:
+                logger.debug("prediction_loop: no features available this cycle")
+            else:
+                df_min_row, df_hour_row, df_min_df = result
+                actual_price = df_min_row["close"]
+
+                features = df_min_row[["close", "rsi", "sma", "volume", "log_volume"]]
+                features_df = pd.DataFrame([features])
+
+                min_prediction = predict(features_df)
+                hour_prediction = predict_hourly(features_df)
+
+                pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+                if min_prediction is not None and hour_prediction is not None:
+                    predictions_logger.info("", extra={"min_pred": min_prediction, "hour_pred": hour_prediction})
+
+                    prediction_record = {
+                        "timestamp": pred_timestamp,
+                        "actual_price": actual_price,
+                        "min_pred": min_prediction,
+                        "hour_pred": hour_prediction,
+                        "min_error": abs(actual_price - min_prediction),
+                        "hour_error": abs(actual_price - hour_prediction)
+                    }
+                    predictions.append(prediction_record)
+                    if len(predictions) > max_predictions:
+                        predictions = predictions[-max_predictions:]
+
+                    with prediction_file_lock:
+                        pd.DataFrame(predictions).to_csv("logs/predictions.csv", index=False)
+
+                    logger.info(f"Prediction saved: actual={actual_price}, min_pred={min_prediction}, hour_pred={hour_prediction}")
+
+                last_pred_time = time.time()
+
+        except Exception as e:
+            logger.error(f"Error in prediction_loop: {e}", exc_info=True)
+
+        elapsed = time.time() - start
+        logger.debug(f"prediction_loop iteration took {elapsed:.3f} seconds")
+        sleep_time = max(0, wait_seconds - elapsed)
+        await asyncio.sleep(sleep_time)
