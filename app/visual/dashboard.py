@@ -9,7 +9,6 @@ from flask import Response, request
 from flask import send_from_directory
 import requests
 
-
 # Загружаем конфиг
 with open("app/config/config.yaml", "r") as f:
     config = yaml.safe_load(f)
@@ -27,6 +26,29 @@ BasicAuth(dash_app, DASH_AUTH_CREDENTIALS)
 
 dash_app.layout = create_layout()
 
+
+
+@dash_app.server.route('/logs/predictions_raw', methods=['GET'])
+def serve_predictions_raw():
+    """Возвращает содержимое файла predictions.log в виде текста"""
+    try:
+        log_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.log')
+        )
+        logger.info(f"Serving predictions log file: {log_file_path}")
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Predictions log file not found at {log_file_path}")
+            return Response("Лог предсказаний отсутствует", status=404, mimetype='text/plain')
+
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+
+        return Response(log_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving predictions.log: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
 @dash_app.server.route('/logs/predictions', methods=['GET'])
 def serve_predictions_log():
