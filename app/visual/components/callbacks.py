@@ -107,7 +107,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         # Проверка актуальности данных
         latest_timestamp = df["timestamp"].max()
         current_time = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
-        if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 2:
+        if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 20:
             logger.warning(f"Data is stale: latest_timestamp={latest_timestamp}, current_time={current_time}")
             fig = go.Figure()
             fig.add_annotation(

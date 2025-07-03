@@ -2,14 +2,14 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 20000
+  buffer_size: 100000
   download_range: 1day
   min_records: 60
   simulation_train_period: 3600
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1m
+    1day: 1s
     1hour: 1s
     1month: 1m
 indicators:
@@ -27,11 +27,11 @@ visual:
   error_band_color: rgba(0,255,0,0.2)
   error_band_min: 30
   error_band_multiplier: 1.5
-  log_refresh_interval: 70000
+  log_refresh_interval: 1000
   predicted_price_color: red
   real_price_color: blue
   show_error_band: true
   stats_interval: 10
-  update_interval: 2000
+  update_interval: 1000
   volume_graph_height: 150
   y_margin: 0.005
