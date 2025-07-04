@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="refresh" content="1">
   <title>Логи прогнозов BTC/USDT</title>
   <link rel="stylesheet" href="/assets/logs.css" />
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -24,16 +25,6 @@
           {{TABLE_ROWS}}
         </tbody>
       </table>
-    </div>
-
-    <div class="refresh-form-wrapper">
-      <h2>Настройки обновления</h2>
-      <form id="refresh-form">
-        <label for="refresh-interval">Интервал обновления (сек):</label>
-        <input type="number" id="refresh-interval" value="{{REFRESH_INTERVAL_SEC}}" min="1" required>
-        <button type="submit">Применить</button>
-      </form>
-      <p id="current-interval">Текущий интервал обновления: {{CURRENT_INTERVAL_SEC}} секунд</p>
     </div>
   </div>
 

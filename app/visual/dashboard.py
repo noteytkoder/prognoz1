@@ -8,6 +8,7 @@ import os
 from flask import Response, request
 from flask import send_from_directory
 import requests
+import pandas as pd
 
 # Загружаем конфиг
 with open("app/config/config.yaml", "r") as f:
@@ -27,9 +28,8 @@ BasicAuth(dash_app, DASH_AUTH_CREDENTIALS)
 dash_app.layout = create_layout()
 
 
-
-@dash_app.server.route('/logs/predictions_raw', methods=['GET'])
-def serve_predictions_raw():
+@dash_app.server.route('/logs/predictions.log', methods=['GET'])
+def serve_predictions_log_text():
     """Возвращает содержимое файла predictions.log в виде текста"""
     try:
         log_file_path = os.path.abspath(
@@ -49,89 +49,87 @@ def serve_predictions_raw():
     except Exception as e:
         logger.error(f"Error serving predictions.log: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-
-@dash_app.server.route('/logs/predictions', methods=['GET'])
-def serve_predictions_log():
+    
+@dash_app.server.route('/logs/predictions.csv', methods=['GET'])
+def serve_predictions_csv():
+    """Возвращает содержимое файла predictions.csv в виде текста"""
     try:
-        # Чтение параметра refresh из query-параметров
-        user_refresh = request.args.get('refresh')
-        if user_refresh and user_refresh.isdigit():
-            refresh_interval = int(user_refresh)
-        else:
-            refresh_interval = config["visual"]["log_refresh_interval"]
+        csv_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
+        )
+        logger.info(f"Serving predictions CSV file: {csv_file_path}")
 
-        log_file_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.log')
+        if not os.path.exists(csv_file_path):
+            logger.error(f"Predictions CSV file not found at {csv_file_path}")
+            return Response("Файл предсказаний отсутствует", status=404, mimetype='text/plain')
+
+        with open(csv_file_path, 'r', encoding='utf-8') as f:
+            csv_content = f.read()
+
+        return Response(csv_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving predictions.csv: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@dash_app.server.route('/logs/predictions.table', methods=['GET'])
+def serve_predictions_table():
+    """Возвращает HTML-таблицу с последней записью из predictions.csv"""
+    try:
+        csv_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
         )
 
-        if not os.path.exists(log_file_path):
+        if not os.path.exists(csv_file_path):
+            logger.error(f"Predictions file not found at {csv_file_path}")
+            return Response("Л-orgи отсутствуют", status=404, mimetype='text/plain')
+
+        # Чтение последней строки из predictions.csv
+        pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
+        if pred_df.empty:
             return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+        last_pred = pred_df.iloc[-1]
 
-        with open(log_file_path, 'r', encoding='utf-8') as f:
-            log_content = f.readlines()
+        # Форматирование времени до секунд
+        timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
 
-        log_content = log_content[-1:]
+        # Форматирование цен и прогнозов с точностью до 4 знаков
+        actual_price = round(last_pred['actual_price'], 4)
+        min_pred = round(last_pred['min_pred'], 4)
+        hour_pred = round(last_pred['hour_pred'], 4)
 
-        # Получение текущей цены с Binance
-        try:
-            binance_data = requests.get(
-                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5
-            )
-            binance_price = round(float(binance_data.json().get("price", 0)), 2)
-        except Exception as e:
-            logger.error(f"Ошибка запроса к Binance: {e}")
-            binance_price = 0
+        # Вычисление процентов с точностью до 2 знаков
+        if actual_price > 0:
+            min_change = ((min_pred - actual_price) / actual_price) * 100
+            hour_change = ((hour_pred - actual_price) / actual_price) * 100
+            min_change_str = f"{min_change:+.2f}%"
+            hour_change_str = f"{hour_change:+.2f}%"
+        else:
+            min_change_str = hour_change_str = "N/A"
 
-        # Построение таблицы
-        table_rows = ""
-        for line in log_content:
-            try:
-                parts = line.strip().split(", ")
-                if len(parts) != 3:
-                    continue
-                timestamp = parts[0]
-                min_pred = float(parts[1].split("=")[1])
-                hour_pred = float(parts[2].split("=")[1])
-
-                # Проценты
-                if binance_price > 0:
-                    min_change = ((min_pred - binance_price) / binance_price) * 100
-                    hour_change = ((hour_pred - binance_price) / binance_price) * 100
-                    min_change_str = f"{min_change:+.2f}%"
-                    hour_change_str = f"{hour_change:+.2f}%"
-                else:
-                    min_change_str = hour_change_str = "N/A"
-
-                table_rows += f"""
-                  <tr>
-                    <td>{timestamp}</td>
-                    <td>{binance_price:.2f}</td>
-                    <td>{min_pred:.2f} ({min_change_str})</td>
-                    <td>{hour_pred:.2f} ({hour_change_str})</td>
-                  </tr>
-                """
-            except Exception as e:
-                logger.warning(f"Failed to parse log line: {line.strip()}, error: {e}")
+        # Формирование строки таблицы
+        table_rows = f"""
+            <tr>
+                <td>{timestamp}</td>
+                <td>{actual_price:.4f}</td>
+                <td>{min_pred:.4f} ({min_change_str})</td>
+                <td>{hour_pred:.4f} ({hour_change_str})</td>
+            </tr>
+        """
 
         # Загрузка шаблона
         TEMPLATE_PATH = os.path.join(
-            os.path.dirname(__file__),
-            '..', '..', 'app', 'templates', 'logs_template.html'
+            os.path.dirname(__file__), '..', '..', 'app', 'templates', 'logs_template.html'
         )
         with open(TEMPLATE_PATH, encoding='utf-8') as f:
             template = f.read()
 
-        html_content = template \
-            .replace('{{TABLE_ROWS}}', table_rows) \
-            .replace('{{REFRESH_INTERVAL}}', str(config["visual"]["log_refresh_interval"])) \
-            .replace('{{REFRESH_INTERVAL_SEC}}', str(int(config["visual"]["log_refresh_interval"] // 1000))) \
-            .replace('{{CURRENT_INTERVAL_SEC}}', str(int(config["visual"]["log_refresh_interval"] // 1000)))
-
+        html_content = template.replace('{{TABLE_ROWS}}', table_rows)
 
         return Response(html_content, mimetype='text/html')
 
     except Exception as e:
-        logger.error(f"Error serving predictions.log: {e}")
+        logger.error(f"Error serving predictions.csv: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
 

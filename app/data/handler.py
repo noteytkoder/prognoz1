@@ -315,7 +315,7 @@ async def prediction_loop():
     interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
     wait_seconds = interval_seconds.get(interval, 1)
-    max_predictions = 100000  # Ограничение размера списка predictions
+    max_predictions = 10000
 
     logger.info(f"Starting prediction_loop with interval: {wait_seconds} seconds")
 
@@ -362,6 +362,5 @@ async def prediction_loop():
             logger.error(f"Error in prediction_loop: {e}", exc_info=True)
 
         elapsed = time.time() - start
-        logger.debug(f"prediction_loop iteration took {elapsed:.3f} seconds")
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)
