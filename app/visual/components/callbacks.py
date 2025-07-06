@@ -127,7 +127,6 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             return (fig, go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
                     main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
 
-
         gaps = df["timestamp"].diff().dt.total_seconds()
         if gaps.max() > interval_seconds.get(interval, 1) * 1.5:
             logger.warning(f"Detected gaps in data: max gap {gaps.max()} seconds")
@@ -231,13 +230,6 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                         name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
                     ))
 
-        if mse_min is not None:
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.05, y=0.95,
-                text=f"MSE: {mse_min if forecast_range == '1min' else mse_hour:.2f}, MAE: {mae_min if forecast_range == '1min' else mae_hour:.2f}, Количество: {pred_count}",
-                showarrow=False, font=dict(size=12, color="white")
-            )
-
         fig.update_layout(
             title="BTC/USDT: Цены и прогноз",
             xaxis_title="Время (MSK)",
@@ -269,6 +261,13 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     x=filtered_pred_df["min_pred_time"], y=filtered_pred_df["min_pred"],
                     mode="lines", name="Предсказанная цена (1 мин)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
+                # Добавление аннотации с метриками для минутного графика
+                if mse_min is not None and mae_min is not None:
+                    pred_fig_min.add_annotation(
+                        xref="paper", yref="paper", x=0.05, y=0.95,
+                        text=f"MSE: {mse_min:.2f}, MAE: {mae_min:.2f}, Количество: {pred_count}",
+                        showarrow=False, font=dict(size=12, color="white")
+                    )
                 pred_fig_min.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 минута)",
                     xaxis_title="Время (MSK)",
@@ -292,6 +291,13 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     x=filtered_pred_df["hour_pred_time"], y=filtered_pred_df["hour_pred"],
                     mode="lines", name="Предсказанная цена (1 час)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
+                # Добавление аннотации с метриками для часового графика
+                if mse_hour is not None and mae_hour is not None:
+                    pred_fig_hour.add_annotation(
+                        xref="paper", yref="paper", x=0.05, y=0.95,
+                        text=f"MSE: {mse_hour:.2f}, MAE: {mae_hour:.2f}, Количество: {pred_count}",
+                        showarrow=False, font=dict(size=12, color="white")
+                    )
                 pred_fig_hour.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 час)",
                     xaxis_title="Время (MSK)",
@@ -314,7 +320,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         logger.error(f"Error in update_graph: {e}", exc_info=True)
         return (go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
                 main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
-    
+
 @callback(
     Output("download-btn", "n_clicks"),
     Input("download-btn", "n_clicks")
