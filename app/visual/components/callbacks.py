@@ -47,6 +47,8 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
     logger.info(f"Graph update interval set to {interval} ms for {download_range}")
     return interval, interval
 
+import pytz
+
 @callback(
     Output("main-graph", "figure"),
     Output("predictions-graph-min", "figure"),
@@ -75,6 +77,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                  main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout):
     global last_stats_time, last_mse, last_mae, current_layout
     logger.debug(f"Starting update_graph, n_intervals={n}, forecast_range={forecast_range}, autoscale_range={autoscale_range}")
+    msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     try:
         if train_period and train_period != config["model"]["train_window_minutes"]:
@@ -116,7 +119,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         df.reset_index(inplace=True)
 
         latest_timestamp = df["timestamp"].max()
-        current_time = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+        current_time = pd.Timestamp.now(tz=msk_tz)
         if (current_time - latest_timestamp).total_seconds() > interval_seconds.get(interval, 1) * 20:
             fig = go.Figure()
             fig.add_annotation(
@@ -149,17 +152,16 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             default_x_range = [last_time - time_delta, last_time]
             default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(hours=1)]
 
-        # Используем сохраненный макет, если он есть, иначе дефолтный
-        x_range = ([pd.to_datetime(main_stored_layout["xaxis.range[0]"]), 
-                    pd.to_datetime(main_stored_layout["xaxis.range[1]"])] 
+        x_range = ([pd.to_datetime(main_stored_layout["xaxis.range[0]"], utc=True).tz_convert(msk_tz), 
+                    pd.to_datetime(main_stored_layout["xaxis.range[1]"], utc=True).tz_convert(msk_tz)] 
                    if main_stored_layout and "xaxis.range[0]" in main_stored_layout 
                    else default_x_range)
-        x_range_pred_min = ([pd.to_datetime(pred_min_stored_layout["xaxis.range[0]"]), 
-                            pd.to_datetime(pred_min_stored_layout["xaxis.range[1]"])] 
+        x_range_pred_min = ([pd.to_datetime(pred_min_stored_layout["xaxis.range[0]"], utc=True).tz_convert(msk_tz), 
+                            pd.to_datetime(pred_min_stored_layout["xaxis.range[1]"], utc=True).tz_convert(msk_tz)] 
                            if pred_min_stored_layout and "xaxis.range[0]" in pred_min_stored_layout 
                            else default_x_range_pred)
-        x_range_pred_hour = ([pd.to_datetime(pred_hour_stored_layout["xaxis.range[0]"]), 
-                             pd.to_datetime(pred_hour_stored_layout["xaxis.range[1]"])] 
+        x_range_pred_hour = ([pd.to_datetime(pred_hour_stored_layout["xaxis.range[0]"], utc=True).tz_convert(msk_tz), 
+                             pd.to_datetime(pred_hour_stored_layout["xaxis.range[1]"], utc=True).tz_convert(msk_tz)] 
                             if pred_hour_stored_layout and "xaxis.range[0]" in pred_hour_stored_layout 
                             else default_x_range_pred)
 
@@ -195,17 +197,26 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             if os.path.exists("logs/predictions.csv") and os.path.getsize("logs/predictions.csv") > 0:
                 with buffer_lock:
                     pred_df = pd.read_csv("logs/predictions.csv", encoding='utf-8')
-                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"])
-                pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"])
-                pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"])
+                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
                 pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
                 if len(pred_df) > 1:
-                    mse_min = np.mean(pred_df["min_error"] ** 2)
-                    mae_min = np.mean(pred_df["min_error"])
-                    mse_hour = np.mean(pred_df["hour_error"] ** 2)
-                    mae_hour = np.mean(pred_df["hour_error"])
+                    # Фильтруем записи, где ошибки рассчитаны
+                    min_valid = pred_df[pred_df["min_error"].notna()]
+                    hour_valid = pred_df[pred_df["hour_error"].notna()]
+                    if not min_valid.empty:
+                        mse_min = np.mean(min_valid["min_error"] ** 2)
+                        mae_min = np.mean(min_valid["min_error"])
+                    if not hour_valid.empty:
+                        mse_hour = np.mean(hour_valid["hour_error"] ** 2)
+                        mae_hour = np.mean(hour_valid["hour_error"])
                     pred_count = len(pred_df)
-                    error_band_width = max(mae_min * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"]) if forecast_range == "1min" else max(mae_hour * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"])
+                    error_band_width = (max(mae_min * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"]) 
+                                        if forecast_range == "1min" and mae_min is not None 
+                                        else max(mae_hour * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"]) 
+                                        if forecast_range == "1hour" and mae_hour is not None 
+                                        else config["visual"]["error_band_min"])
         except Exception as e:
             logger.error(f"Failed to read logs/predictions.csv: {e}")
 
@@ -261,13 +272,14 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     x=filtered_pred_df["min_pred_time"], y=filtered_pred_df["min_pred"],
                     mode="lines", name="Предсказанная цена (1 мин)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
-                # Добавление аннотации с метриками для минутного графика
-                if mse_min is not None and mae_min is not None:
-                    pred_fig_min.add_annotation(
-                        xref="paper", yref="paper", x=0.05, y=0.95,
-                        text=f"MSE: {mse_min:.2f}, MAE: {mae_min:.2f}, Количество: {pred_count}",
-                        showarrow=False, font=dict(size=12, color="white")
-                    )
+                annotation_text = (f"MSE: {mse_min:.2f}, MAE: {mae_min:.2f}, Количество: {pred_count}"
+                                  if mse_min is not None and mae_min is not None
+                                  else "Ожидание данных для расчета метрик")
+                pred_fig_min.add_annotation(
+                    xref="paper", yref="paper", x=0.05, y=0.95,
+                    text=annotation_text,
+                    showarrow=False, font=dict(size=12, color="white")
+                )
                 pred_fig_min.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 минута)",
                     xaxis_title="Время (MSK)",
@@ -291,13 +303,14 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     x=filtered_pred_df["hour_pred_time"], y=filtered_pred_df["hour_pred"],
                     mode="lines", name="Предсказанная цена (1 час)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
-                # Добавление аннотации с метриками для часового графика
-                if mse_hour is not None and mae_hour is not None:
-                    pred_fig_hour.add_annotation(
-                        xref="paper", yref="paper", x=0.05, y=0.95,
-                        text=f"MSE: {mse_hour:.2f}, MAE: {mae_hour:.2f}, Количество: {pred_count}",
-                        showarrow=False, font=dict(size=12, color="white")
-                    )
+                annotation_text = (f"MSE: {mse_hour:.2f}, MAE: {mae_hour:.2f}, Количество: {pred_count}"
+                                  if mse_hour is not None and mae_hour is not None
+                                  else "Ожидание данных для расчета метрик")
+                pred_fig_hour.add_annotation(
+                    xref="paper", yref="paper", x=0.05, y=0.95,
+                    text=annotation_text,
+                    showarrow=False, font=dict(size=12, color="white")
+                )
                 pred_fig_hour.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 час)",
                     xaxis_title="Время (MSK)",

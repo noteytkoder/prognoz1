@@ -138,8 +138,8 @@ def serve_predictions_table():
         hour_pred = round(float(last_pred['hour_pred']), 4)
         min_change_str = f"{last_pred['min_change_pct']:+.2f}%"
         hour_change_str = f"{last_pred['hour_change_pct']:+.2f}%"
-        min_pred_time = last_pred['min_pred_time']
-        hour_pred_time = last_pred['hour_pred_time']
+        min_pred_time = pd.to_datetime(last_pred['min_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+        hour_pred_time = pd.to_datetime(last_pred['hour_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
 
         # Формируем строку таблицы
         table_rows = f"""

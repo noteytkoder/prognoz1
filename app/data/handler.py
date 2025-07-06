@@ -234,28 +234,6 @@ async def watchdog():
             RESTART_FLAG.touch()
             os._exit(0)
 
-async def start_binance_websocket():
-    await check_network()
-    raw_queue = asyncio.Queue()
-    range_type = config["data"]["download_range"]
-    interval = config["data"]["websocket_intervals"].get(range_type, "1s")
-    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
-    trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
-
-    tasks = [
-        producer_ws(kline_uri, "kline", raw_queue),
-        producer_ws(trade_uri, "aggTrade", raw_queue),
-        consumer_loop(raw_queue),
-        watchdog(),
-        prediction_loop()
-    ]
-    try:
-        await asyncio.gather(*tasks)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        RESTART_FLAG.touch()
-        os._exit(0)
-
 
 cached_df = None
 last_buffer_update = 0
@@ -315,6 +293,61 @@ def get_latest_features():
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
     
+async def update_errors_loop():
+    """Обновляет фактические цены и ошибки в predictions.csv на основе data_buffer"""
+    global data_buffer
+    csv_file_path = "logs/predictions.csv"
+    interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
+    interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
+    tolerance_seconds = {"min": 60, "hour": 300}  # Допуск ±1 мин для min_pred_time, ±5 мин для hour_pred_time
+    msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
+
+    while True:
+        try:
+            if not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0:
+                await asyncio.sleep(10)
+                continue
+
+            with prediction_file_lock:
+                pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
+                if pred_df.empty:
+                    await asyncio.sleep(10)
+                    continue
+                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
+
+            with buffer_lock:
+                data_df = pd.DataFrame(data_buffer)
+                if data_df.empty:
+                    await asyncio.sleep(10)
+                    continue
+                data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])  # Уже tz-aware из process_timestamp
+
+            updated = False
+            for idx, row in pred_df.iterrows():
+                if pd.isna(row["min_actual_price"]) or pd.isna(row["hour_actual_price"]):
+                    for pred_type, pred_time in [("min", row["min_pred_time"]), ("hour", row["hour_pred_time"])]:
+                        if pd.isna(row[f"{pred_type}_actual_price"]):
+                            # Ищем ближайшую свечу в data_buffer
+                            time_diff = (data_df["timestamp"] - pred_time).abs()
+                            if time_diff.min().total_seconds() <= tolerance_seconds[pred_type]:
+                                closest_idx = time_diff.idxmin()
+                                actual_price = data_df.loc[closest_idx, "close"]
+                                pred_df.at[idx, f"{pred_type}_actual_price"] = actual_price
+                                pred_df.at[idx, f"{pred_type}_error"] = abs(actual_price - row[f"{pred_type}_pred"])
+                                updated = True
+
+            if updated:
+                with prediction_file_lock:
+                    tmp_path = csv_file_path + ".tmp"
+                    pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
+                    os.replace(tmp_path, csv_file_path)
+                    logger.debug(f"Updated errors in {csv_file_path}, size: {os.path.getsize(csv_file_path)} bytes")
+
+        except Exception as e:
+            logger.error(f"Error in update_errors_loop: {e}", exc_info=True)
+        await asyncio.sleep(10)  # Проверяем каждые 10 секунд
 
 async def prediction_loop():
     global last_pred_time, predictions
@@ -323,6 +356,7 @@ async def prediction_loop():
     wait_seconds = interval_seconds.get(interval, 1)
     max_predictions = 10000
     csv_file_path = "logs/predictions.csv"
+    msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     logger.info(f"Starting prediction_loop with interval: {wait_seconds} seconds")
 
@@ -331,7 +365,8 @@ async def prediction_loop():
         with prediction_file_lock:
             pd.DataFrame(columns=[
                 "timestamp", "actual_price", "min_pred", "hour_pred", "min_error", "hour_error",
-                "min_pred_time", "hour_pred_time", "min_change_pct", "hour_change_pct"
+                "min_pred_time", "hour_pred_time", "min_change_pct", "hour_change_pct",
+                "min_actual_price", "hour_actual_price"
             ]).to_csv(csv_file_path, index=False)
             logger.info(f"Initialized empty predictions.csv with headers")
 
@@ -351,9 +386,9 @@ async def prediction_loop():
                 min_prediction = predict(features_df)
                 hour_prediction = predict_hourly(features_df)
 
-                pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
-                min_pred_time = (pred_timestamp + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-                hour_pred_time = (pred_timestamp + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+                pred_timestamp = pd.Timestamp.now(tz=msk_tz)
+                min_pred_time = pred_timestamp + pd.Timedelta(minutes=1)
+                hour_pred_time = pred_timestamp + pd.Timedelta(hours=1)
 
                 # Вычисляем проценты изменения
                 min_change_pct = ((min_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
@@ -369,10 +404,10 @@ async def prediction_loop():
                             "timestamp": str(pred_timestamp),
                             "actual_price": actual_price,
                             "min_pred": min_prediction,
-                            "min_pred_time": min_pred_time,
+                            "min_pred_time": min_pred_time.strftime('%Y-%m-%d %H:%M:%S%z'),
                             "min_change": min_change_str,
                             "hour_pred": hour_prediction,
-                            "hour_pred_time": hour_pred_time,
+                            "hour_pred_time": hour_pred_time.strftime('%Y-%m-%d %H:%M:%S%z'),
                             "hour_change": hour_change_str,
                         }
                     )
@@ -382,12 +417,14 @@ async def prediction_loop():
                         "actual_price": actual_price,
                         "min_pred": min_prediction,
                         "hour_pred": hour_prediction,
-                        "min_error": abs(actual_price - min_prediction),
-                        "hour_error": abs(actual_price - hour_prediction),
+                        "min_error": None,
+                        "hour_error": None,
                         "min_pred_time": min_pred_time,
                         "hour_pred_time": hour_pred_time,
                         "min_change_pct": min_change_pct,
-                        "hour_change_pct": hour_change_pct
+                        "hour_change_pct": hour_change_pct,
+                        "min_actual_price": None,
+                        "hour_actual_price": None
                     }
                     predictions.append(prediction_record)
                     if len(predictions) > max_predictions:
@@ -419,3 +456,26 @@ async def prediction_loop():
         elapsed = time.time() - start
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)
+
+async def start_binance_websocket():
+    await check_network()
+    raw_queue = asyncio.Queue()
+    range_type = config["data"]["download_range"]
+    interval = config["data"]["websocket_intervals"].get(range_type, "1s")
+    kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
+    trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
+
+    tasks = [
+        producer_ws(kline_uri, "kline", raw_queue),
+        producer_ws(trade_uri, "aggTrade", raw_queue),
+        consumer_loop(raw_queue),
+        watchdog(),
+        prediction_loop(),
+        update_errors_loop()  # Добавляем новую корутину
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        RESTART_FLAG.touch()
+        os._exit(0)
