@@ -9,6 +9,7 @@ from flask import Response, request
 from flask import send_from_directory
 import requests
 import pandas as pd
+from app.data.handler import buffer_lock
 
 # Загружаем конфиг
 with open("app/config/config.yaml", "r") as f:
@@ -27,6 +28,11 @@ BasicAuth(dash_app, DASH_AUTH_CREDENTIALS)
 
 dash_app.layout = create_layout()
 
+def get_file_reversed(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    return ''.join(reversed(lines))
+
 
 @dash_app.server.route('/logs/predictions.log', methods=['GET'])
 def serve_predictions_log_text():
@@ -41,8 +47,10 @@ def serve_predictions_log_text():
             logger.error(f"Predictions log file not found at {log_file_path}")
             return Response("Лог предсказаний отсутствует", status=404, mimetype='text/plain')
 
-        with open(log_file_path, 'r', encoding='utf-8') as f:
-            log_content = f.read()
+        # with open(log_file_path, 'r', encoding='utf-8') as f:
+        #     log_content = f.read()
+        log_content = get_file_reversed(log_file_path)
+
 
         return Response(log_content, mimetype='text/plain')
 
@@ -63,14 +71,41 @@ def serve_predictions_csv():
             logger.error(f"Predictions CSV file not found at {csv_file_path}")
             return Response("Файл предсказаний отсутствует", status=404, mimetype='text/plain')
 
-        with open(csv_file_path, 'r', encoding='utf-8') as f:
-            csv_content = f.read()
+        # with open(csv_file_path, 'r', encoding='utf-8') as f:
+        #     csv_content = f.read()
+        csv_content = get_file_reversed(csv_file_path)
+
 
         return Response(csv_content, mimetype='text/plain')
 
     except Exception as e:
         logger.error(f"Error serving predictions.csv: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+
+@dash_app.server.route('/logs/logtotal', methods=['GET'])
+def serve_logtotal():
+    try:
+        log_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'app.log')
+        )
+        # logger.info(f"Serving full log file: {log_file_path}")
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Log file not found at {log_file_path}")
+            return Response("Лог отсутствует", status=404, mimetype='text/plain')
+
+        # with open(log_file_path, 'r', encoding='utf-8') as f:
+        #     log_content = f.read()
+        log_content = get_file_reversed(log_file_path)
+
+
+        return Response(log_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving logtotal: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
 
 @dash_app.server.route('/logs/predictions.table', methods=['GET'])
 def serve_predictions_table():
@@ -79,24 +114,31 @@ def serve_predictions_table():
         csv_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
         )
+        logger.info(f"Serving predictions CSV file: {csv_file_path}")
 
         if not os.path.exists(csv_file_path):
             logger.error(f"Predictions file not found at {csv_file_path}")
-            return Response("Л-orgи отсутствуют", status=404, mimetype='text/plain')
-
-        # Чтение последней строки из predictions.csv
-        pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-        if pred_df.empty:
             return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
+        with buffer_lock:
+            if os.path.getsize(csv_file_path) == 0:  # Проверяем, пустой ли файл
+                logger.error(f"Predictions file is empty at {csv_file_path}")
+                return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
+
+            pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
+            if pred_df.empty:
+                logger.error(f"Predictions file is empty after reading at {csv_file_path}")
+                return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
         last_pred = pred_df.iloc[-1]
 
         # Форматирование времени до секунд
         timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
 
         # Форматирование цен и прогнозов с точностью до 4 знаков
-        actual_price = round(last_pred['actual_price'], 4)
-        min_pred = round(last_pred['min_pred'], 4)
-        hour_pred = round(last_pred['hour_pred'], 4)
+        actual_price = round(float(last_pred['actual_price']), 4)
+        min_pred = round(float(last_pred['min_pred']), 4)
+        hour_pred = round(float(last_pred['hour_pred']), 4)
 
         # Вычисление процентов с точностью до 2 знаков
         if actual_price > 0:
@@ -128,31 +170,11 @@ def serve_predictions_table():
 
         return Response(html_content, mimetype='text/html')
 
+    except pd.errors.EmptyDataError:
+        logger.error(f"Predictions file is empty or corrupted at {csv_file_path}")
+        return Response("Логи отсутствуют (файл пуст или поврежден)", status=404, mimetype='text/plain')
     except Exception as e:
-        logger.error(f"Error serving predictions.csv: {e}")
-        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-
-
-
-@dash_app.server.route('/logs/logtotal', methods=['GET'])
-def serve_logtotal():
-    try:
-        log_file_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'app.log')
-        )
-        # logger.info(f"Serving full log file: {log_file_path}")
-
-        if not os.path.exists(log_file_path):
-            logger.error(f"Log file not found at {log_file_path}")
-            return Response("Лог отсутствует", status=404, mimetype='text/plain')
-
-        with open(log_file_path, 'r', encoding='utf-8') as f:
-            log_content = f.read()
-
-        return Response(log_content, mimetype='text/plain')
-
-    except Exception as e:
-        logger.error(f"Error serving logtotal: {e}")
+        logger.error(f"Error serving predictions.csv: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
 

@@ -12,11 +12,11 @@ import os
 import sys
 import subprocess
 import platform
-from threading import Lock
 from pathlib import Path
 from app.logs.logger import setup_logger
+from threading import Lock
+from app.data.handler import buffer_lock
 
-prediction_file_lock = Lock()
 RESTART_FLAG = Path("restart.flag")
 logger = setup_logger()
 
@@ -82,7 +82,8 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             if not data_buffer:
                 logger.warning("Data buffer is empty")
                 return go.Figure(), go.Figure(), {"display": "none"}, stored_layout
-            df = pd.DataFrame(data_buffer)
+            data_copy = list(data_buffer)  # Создаем копию данных
+            df = pd.DataFrame(data_copy) # тут изменили data_buffer на data_copy
 
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -161,7 +162,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         pred_df = pd.DataFrame()
         try:
             if os.path.exists("logs/predictions.csv") and os.path.getsize("logs/predictions.csv") > 0:
-                with prediction_file_lock:
+                with buffer_lock:
                     pred_df = pd.read_csv("logs/predictions.csv", encoding='utf-8')
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"])
                 pred_df = pred_df[pred_df["timestamp"] >= (current_time - pd.Timedelta(hours=1))]

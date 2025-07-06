@@ -198,7 +198,11 @@ async def consumer_loop(raw_queue):
                     logger.warning(f"[consumer] GAP DETECTED: {timestamp} vs {last_timestamp}")
 
                 last_timestamp = timestamp
-                data_buffer.append(item)
+                if all(key in item for key in ["timestamp", "open", "high", "low", "close", "volume"]):
+                    with buffer_lock:
+                        data_buffer.append(item)
+                else:
+                    logger.error(f"Invalid data item: {item}")
                 message_count += 1
 
                 if message_count % 100 == 0:
@@ -310,14 +314,26 @@ def get_latest_features():
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
     
+# В handler.py
+import os
+import time
+from pathlib import Path
+
 async def prediction_loop():
     global last_pred_time, predictions
     interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
     wait_seconds = interval_seconds.get(interval, 1)
     max_predictions = 10000
+    csv_file_path = "logs/predictions.csv"
 
     logger.info(f"Starting prediction_loop with interval: {wait_seconds} seconds")
+
+    # Инициализация файла с заголовками, если он не существует
+    if not os.path.exists(csv_file_path):
+        with prediction_file_lock:
+            pd.DataFrame(columns=["timestamp", "actual_price", "min_pred", "hour_pred", "min_error", "hour_error"]).to_csv(csv_file_path, index=False)
+            logger.info(f"Initialized empty predictions.csv with headers")
 
     while True:
         start = time.time()
@@ -351,12 +367,25 @@ async def prediction_loop():
                     if len(predictions) > max_predictions:
                         predictions = predictions[-max_predictions:]
 
-                    with prediction_file_lock:
-                        pd.DataFrame(predictions).to_csv("logs/predictions.csv", index=False)
+                    # Атомарная запись с повторными попытками
+                    retries = 3
+                    for attempt in range(retries):
+                        try:
+                            with prediction_file_lock:
+                                tmp_path = csv_file_path + ".tmp"
+                                pd.DataFrame(predictions).to_csv(tmp_path, index=False, encoding='utf-8')
+                                os.replace(tmp_path, csv_file_path)
+                                logger.debug(f"Predictions saved to {csv_file_path}, size: {os.path.getsize(csv_file_path)} bytes")
+                            break
+                        except PermissionError as e:
+                            logger.warning(f"PermissionError on attempt {attempt+1} in prediction_loop: {e}")
+                            if attempt < retries - 1:
+                                time.sleep(0.1)  # Небольшая пауза перед повторной попыткой
+                            else:
+                                logger.error(f"Failed to save predictions after {retries} attempts: {e}")
+                                raise
 
-                    logger.info(f"Prediction saved: actual={actual_price}, min_pred={min_prediction}, hour_pred={hour_prediction}")
-
-                last_pred_time = time.time()
+                last_pred_time = time.time
 
         except Exception as e:
             logger.error(f"Error in prediction_loop: {e}", exc_info=True)
