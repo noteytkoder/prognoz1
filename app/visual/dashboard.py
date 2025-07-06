@@ -106,10 +106,9 @@ def serve_logtotal():
         logger.error(f"Error serving logtotal: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
-
 @dash_app.server.route('/logs/predictions.table', methods=['GET'])
 def serve_predictions_table():
-    """Возвращает HTML-таблицу с последней записью из predictions.csv"""
+    """Возвращает HTML-таблицу с последней записью из predictions.csv с расчетом времени прогнозов"""
     try:
         csv_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
@@ -121,7 +120,7 @@ def serve_predictions_table():
             return Response("Логи отсутствуют", status=404, mimetype='text/plain')
 
         with buffer_lock:
-            if os.path.getsize(csv_file_path) == 0:  # Проверяем, пустой ли файл
+            if os.path.getsize(csv_file_path) == 0:
                 logger.error(f"Predictions file is empty at {csv_file_path}")
                 return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
 
@@ -132,15 +131,20 @@ def serve_predictions_table():
 
         last_pred = pred_df.iloc[-1]
 
-        # Форматирование времени до секунд
-        timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+        # Парсим timestamp
+        timestamp_raw = pd.to_datetime(last_pred['timestamp'])
+        timestamp = timestamp_raw.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Форматирование цен и прогнозов с точностью до 4 знаков
+        # Считаем прогнозные времена
+        min_pred_timestamp = (timestamp_raw + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
+        hour_pred_timestamp = (timestamp_raw + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Форматируем значения цен
         actual_price = round(float(last_pred['actual_price']), 4)
         min_pred = round(float(last_pred['min_pred']), 4)
         hour_pred = round(float(last_pred['hour_pred']), 4)
 
-        # Вычисление процентов с точностью до 2 знаков
+        # Вычисляем проценты
         if actual_price > 0:
             min_change = ((min_pred - actual_price) / actual_price) * 100
             hour_change = ((hour_pred - actual_price) / actual_price) * 100
@@ -149,15 +153,17 @@ def serve_predictions_table():
         else:
             min_change_str = hour_change_str = "N/A"
 
-        # Формирование строки таблицы
+        # Формируем строку таблицы
         table_rows = f"""
             <tr>
                 <td>{timestamp}</td>
                 <td>{actual_price:.4f}</td>
-                <td>{min_pred:.4f} ({min_change_str})</td>
-                <td>{hour_pred:.4f} ({hour_change_str})</td>
+                <td>{min_pred:.4f} ({min_change_str}) <br><small>{min_pred_timestamp}</small></td>
+                <td>{hour_pred:.4f} ({hour_change_str}) <br><small>{hour_pred_timestamp}</small></td>
             </tr>
         """
+
+
 
         # Загрузка шаблона
         TEMPLATE_PATH = os.path.join(
@@ -176,6 +182,7 @@ def serve_predictions_table():
     except Exception as e:
         logger.error(f"Error serving predictions.csv: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
 
 
 def start_dash():
