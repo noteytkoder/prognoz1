@@ -370,8 +370,10 @@ async def prediction_loop():
                             "actual_price": actual_price,
                             "min_pred": min_prediction,
                             "min_pred_time": min_pred_time,
+                            "min_change": min_change_str,
                             "hour_pred": hour_prediction,
                             "hour_pred_time": hour_pred_time,
+                            "hour_change": hour_change_str,
                         }
                     )
 
