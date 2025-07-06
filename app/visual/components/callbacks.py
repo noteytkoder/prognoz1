@@ -54,6 +54,8 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
     Output("predictions-graph-hour", "figure"),
     Output("predictions-graph-hour", "style"),
     Output("graph-layout", "data"),
+    Output("pred-min-layout", "data"),
+    Output("pred-hour-layout", "data"),
     Input("interval-component", "n_intervals"),
     Input("train-period", "value"),
     Input("show-candles", "value"),
@@ -61,10 +63,16 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
     Input("forecast-range", "value"),
     Input("autoscale-range", "value"),
     Input("main-graph", "relayoutData"),
+    Input("predictions-graph-min", "relayoutData"),
+    Input("predictions-graph-hour", "relayoutData"),
     State("graph-layout", "data"),
+    State("pred-min-layout", "data"),
+    State("pred-hour-layout", "data"),
     prevent_initial_call=True
 )
-def update_graph(n, train_period, show_candles, show_error_band, forecast_range, autoscale_range, relayout_data, stored_layout):
+def update_graph(n, train_period, show_candles, show_error_band, forecast_range, autoscale_range, 
+                 main_relayout_data, pred_min_relayout_data, pred_hour_relayout_data,
+                 main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout):
     global last_stats_time, last_mse, last_mae, current_layout
     logger.debug(f"Starting update_graph, n_intervals={n}, forecast_range={forecast_range}, autoscale_range={autoscale_range}")
 
@@ -75,14 +83,20 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             save_config(new_config)
             logger.info(f"Train period updated to {train_period} minutes")
 
-        if relayout_data and "xaxis.range[0]" in relayout_data:
-            stored_layout = relayout_data
-        current_layout = stored_layout
+        # Обновление макетов для каждого графика
+        if main_relayout_data and "xaxis.range[0]" in main_relayout_data:
+            main_stored_layout = main_relayout_data
+        if pred_min_relayout_data and "xaxis.range[0]" in pred_min_relayout_data:
+            pred_min_stored_layout = pred_min_relayout_data
+        if pred_hour_relayout_data and "xaxis.range[0]" in pred_hour_relayout_data:
+            pred_hour_stored_layout = pred_hour_relayout_data
+        current_layout = main_stored_layout
 
         with buffer_lock:
             if not data_buffer:
                 logger.warning("Data buffer is empty")
-                return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+                return (go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
+                        main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
             data_copy = list(data_buffer)
             df = pd.DataFrame(data_copy)
 
@@ -94,7 +108,8 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
 
         df.set_index("timestamp", inplace=True)
         if df.empty:
-            return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+            return (go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
+                    main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
         df = df.resample(f"{interval_seconds.get(interval, 1)}s").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear")
@@ -109,7 +124,9 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                 text="Данные устарели. Пожалуйста, проверьте соединение.",
                 showarrow=False, font=dict(size=16, color="red")
             )
-            return fig, go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+            return (fig, go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
+                    main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
+
 
         gaps = df["timestamp"].diff().dt.total_seconds()
         if gaps.max() > interval_seconds.get(interval, 1) * 1.5:
@@ -119,28 +136,37 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         ranges = {"1hour": pd.Timedelta(hours=1), "1day": pd.Timedelta(days=1), "1month": pd.Timedelta(days=30)}
         default_time_delta = ranges.get(config["data"]["download_range"], pd.Timedelta(days=1))
 
-        # Определяем диапазон оси X в зависимости от autoscale-range
+        # Диапазон осей по умолчанию
         if autoscale_range == "10min":
             time_delta = pd.Timedelta(minutes=10)
-            df = df[df["timestamp"] >= last_time - time_delta]
-            x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
-            x_range_pred = [last_time - time_delta, last_time]  # Для графиков предсказаний
+            default_x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
+            default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(hours=1)]
         elif autoscale_range == "1hour":
             time_delta = pd.Timedelta(hours=1)
-            df = df[df["timestamp"] >= last_time - time_delta]
-            x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
-            x_range_pred = [last_time - time_delta, last_time]  # Для графиков предсказаний
+            default_x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
+            default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(hours=1)]
         else:
             time_delta = default_time_delta
-            if stored_layout and "xaxis.range[0]" in stored_layout:
-                x_range = [pd.to_datetime(stored_layout["xaxis.range[0]"]), pd.to_datetime(stored_layout["xaxis.range[1]"])]
-                x_range_pred = x_range  # Используем тот же диапазон для предсказаний
-            else:
-                x_range = [last_time - time_delta, last_time]
-                x_range_pred = [last_time - time_delta, last_time]
+            default_x_range = [last_time - time_delta, last_time]
+            default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(hours=1)]
+
+        # Используем сохраненный макет, если он есть, иначе дефолтный
+        x_range = ([pd.to_datetime(main_stored_layout["xaxis.range[0]"]), 
+                    pd.to_datetime(main_stored_layout["xaxis.range[1]"])] 
+                   if main_stored_layout and "xaxis.range[0]" in main_stored_layout 
+                   else default_x_range)
+        x_range_pred_min = ([pd.to_datetime(pred_min_stored_layout["xaxis.range[0]"]), 
+                            pd.to_datetime(pred_min_stored_layout["xaxis.range[1]"])] 
+                           if pred_min_stored_layout and "xaxis.range[0]" in pred_min_stored_layout 
+                           else default_x_range_pred)
+        x_range_pred_hour = ([pd.to_datetime(pred_hour_stored_layout["xaxis.range[0]"]), 
+                             pd.to_datetime(pred_hour_stored_layout["xaxis.range[1]"])] 
+                            if pred_hour_stored_layout and "xaxis.range[0]" in pred_hour_stored_layout 
+                            else default_x_range_pred)
 
         if df.empty:
-            return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+            return (go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
+                    main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
 
         show_candles = "candles" in (show_candles or [])
         df_candles = df
@@ -171,7 +197,9 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                 with buffer_lock:
                     pred_df = pd.read_csv("logs/predictions.csv", encoding='utf-8')
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"])
-                pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]  # Фильтруем по выбранному диапазону
+                pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"])
+                pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"])
+                pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
                 if len(pred_df) > 1:
                     mse_min = np.mean(pred_df["min_error"] ** 2)
                     mae_min = np.mean(pred_df["min_error"])
@@ -191,7 +219,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             if prediction is not None:
                 fig.add_trace(go.Scatter(
                     x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
-                    mode="lines+markers", name=f"Прогноз ({'1 минута' if forecast_range == '1min' else '1 час'})",
+                    mode="lines", name=f"Прогноз ({'1 минута' if forecast_range == '1min' else '1 час'})",
                     line=dict(color=config["visual"]["predicted_price_color"])
                 ))
                 if show_band:
@@ -238,14 +266,14 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     mode="lines", name="Фактическая цена", line=dict(color=config["visual"]["real_price_color"])
                 ))
                 pred_fig_min.add_trace(go.Scatter(
-                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["min_pred"],
+                    x=filtered_pred_df["min_pred_time"], y=filtered_pred_df["min_pred"],
                     mode="lines", name="Предсказанная цена (1 мин)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
                 pred_fig_min.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 минута)",
                     xaxis_title="Время (MSK)",
                     yaxis_title="Цена (USDT)",
-                    xaxis_range=x_range_pred,  # Используем диапазон, соответствующий autoscale-range
+                    xaxis_range=x_range_pred_min,
                     yaxis_range=y_range,
                     showlegend=True,
                     height=400,
@@ -261,14 +289,14 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                     mode="lines", name="Фактическая цена", line=dict(color=config["visual"]["real_price_color"])
                 ))
                 pred_fig_hour.add_trace(go.Scatter(
-                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["hour_pred"],
+                    x=filtered_pred_df["hour_pred_time"], y=filtered_pred_df["hour_pred"],
                     mode="lines", name="Предсказанная цена (1 час)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
                 pred_fig_hour.update_layout(
                     title="BTC/USDT: Фактические и предсказанные цены (1 час)",
                     xaxis_title="Время (MSK)",
                     yaxis_title="Цена (USDT)",
-                    xaxis_range=x_range_pred,  # Используем диапазон, соответствующий autoscale-range
+                    xaxis_range=x_range_pred_hour,
                     yaxis_range=y_range,
                     showlegend=True,
                     height=400,
@@ -279,11 +307,13 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                 )
 
         logger.debug("Graph updated successfully")
-        return fig, pred_fig_min, pred_style_min, pred_fig_hour, pred_style_hour, stored_layout
+        return (fig, pred_fig_min, pred_style_min, pred_fig_hour, pred_style_hour, 
+                main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
 
     except Exception as e:
         logger.error(f"Error in update_graph: {e}", exc_info=True)
-        return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+        return (go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, 
+                main_stored_layout, pred_min_stored_layout, pred_hour_stored_layout)
     
 @callback(
     Output("download-btn", "n_clicks"),

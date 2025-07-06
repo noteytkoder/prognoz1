@@ -7,10 +7,11 @@ def create_layout():
         html.Div(id="main-content", children=create_online_layout()),
         dcc.Interval(id="interval-component", interval=config["visual"]["update_interval"], n_intervals=0),
         dcc.Store(id="graph-layout", data={}),
-        dcc.Store(id="interval-update", data=config["visual"]["update_interval"])
+        dcc.Store(id="interval-update", data=config["visual"]["update_interval"]),
+        dcc.Store(id="pred-min-layout", data={}),  # Новый Store для минутного графика
+        dcc.Store(id="pred-hour-layout", data={})  # Новый Store для часового графика
     ])
 
-# app/visual/layout.py
 def create_online_layout():
     """Макет для онлайн-режима"""
     return html.Div([
@@ -41,8 +42,8 @@ def create_online_layout():
         ], style={"width": "20%", "display": "inline-block", "vertical-align": "top"}),
         html.Div([
             dcc.Graph(id="main-graph", config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToAdd": ["zoom2d", "pan2d", "select2d", "lasso2d"]}),
-            dcc.Graph(id="predictions-graph-min", style={"display": "none"}, config={"displayModeBar": True}),
-            dcc.Graph(id="predictions-graph-hour", style={"display": "none"}, config={"displayModeBar": True}),
+            dcc.Graph(id="predictions-graph-min", style={"display": "none"}, config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToAdd": ["zoom2d", "pan2d"]}),
+            dcc.Graph(id="predictions-graph-hour", style={"display": "none"}, config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToAdd": ["zoom2d", "pan2d"]}),
         ], style={"width": "80%", "display": "inline-block"}),
     ])
 
