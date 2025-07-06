@@ -8,8 +8,8 @@ def create_layout():
         dcc.Interval(id="interval-component", interval=config["visual"]["update_interval"], n_intervals=0),
         dcc.Store(id="graph-layout", data={}),
         dcc.Store(id="interval-update", data=config["visual"]["update_interval"]),
-        dcc.Store(id="pred-min-layout", data={}),  # Новый Store для минутного графика
-        dcc.Store(id="pred-hour-layout", data={})  # Новый Store для часового графика
+        dcc.Store(id="pred-min-layout", data={}),
+        dcc.Store(id="pred-hour-layout", data={})
     ])
 
 def create_online_layout():
@@ -48,52 +48,92 @@ def create_online_layout():
     ])
 
 def create_settings_panel():
-    """Создание панели настроек"""
+    """Создание панели настроек с всплывающими подсказками"""
     return html.Div([
-        html.Label("Размер буфера:"),
-        dcc.Input(id="buffer-size", type="number", value=config["data"]["buffer_size"]),
-        html.Label("Окно RSI:"),
-        dcc.Input(id="rsi-window", type="number", value=config["indicators"]["rsi_window"]),
-        html.Label("Окно SMA:"),
-        dcc.Input(id="sma-window", type="number", value=config["indicators"]["sma_window"]),
-        html.Label("Интервал обновления графика (мс):"),
-        dcc.Input(id="update-interval", type="number", value=config["visual"]["update_interval"]),
-        html.Label("Диапазон загрузки данных:"),
-        dcc.Dropdown(id="download-range", options=[
-            {"label": "1 час", "value": "1hour"},
-            {"label": "1 день", "value": "1day"},
-            {"label": "1 месяц", "value": "1month"},
-        ], value=config["data"]["download_range"]),
-        html.Label("WebSocket интервал для 1 часа:"),
-        dcc.Dropdown(id="websocket-interval-1hour", options=[
-            {"label": "1 секунда", "value": "1s"},
-            {"label": "1 минута", "value": "1m"},
-            {"label": "15 минут", "value": "15m"},
-            {"label": "1 час", "value": "1h"},
-        ], value=config["data"]["websocket_intervals"]["1hour"]),
-        html.Label("WebSocket интервал для 1 дня:"),
-        dcc.Dropdown(id="websocket-interval-1day", options=[
-            {"label": "1 секунда", "value": "1s"},
-            {"label": "1 минута", "value": "1m"},
-            {"label": "15 минут", "value": "15m"},
-            {"label": "1 час", "value": "1h"},
-        ], value=config["data"]["websocket_intervals"]["1day"]),
-        html.Label("WebSocket интервал для 1 месяца:"),
-        dcc.Dropdown(id="websocket-interval-1month", options=[
-            {"label": "1 секунда", "value": "1s"},
-            {"label": "1 минута", "value": "1m"},
-            {"label": "15 минут", "value": "15m"},
-            {"label": "1 час", "value": "1h"},
-        ], value=config["data"]["websocket_intervals"]["1month"]),
-        html.Label("Минимальное количество записей:"),
-        dcc.Input(id="min-records", type="number", value=config["data"]["min_records"]),
-        html.Label("Период обучения модели (сек):"),
-        dcc.Input(id="train-interval", type="number", value=config["data"]["train_interval"]),
-        html.Label("Максимальная глубина модели:"),
-        dcc.Input(id="max-depth", type="number", value=config["model"]["max_depth"]),
-        html.Label("Количество деревьев (n_estimators):"),
-        dcc.Input(id="n_estimators", type="number", value=config["model"]["n_estimators"]),
-        html.Label("Период обучения модели (минуты):"),
-        dcc.Input(id="train-window-minutes", type="number", value=config["model"]["train_window_minutes"]),
+        html.H3("Настройки", style={"margin-top": "20px"}),
+        html.Div([
+            html.Label("Размер буфера:"),
+            dcc.Input(id="buffer-size", type="number", value=config["data"]["buffer_size"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Максимальное количество записей в буфере данных (например, 20000)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Окно RSI:"),
+            dcc.Input(id="rsi-window", type="number", value=config["indicators"]["rsi_window"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Период для расчета индикатора RSI (например, 7 свечей)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Окно SMA:"),
+            dcc.Input(id="sma-window", type="number", value=config["indicators"]["sma_window"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Период для расчета скользящей средней SMA (например, 3 свечи)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Интервал обновления графика (мс):"),
+            dcc.Input(id="update-interval", type="number", value=config["visual"]["update_interval"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Частота обновления графиков в миллисекундах (например, 1000 = 1 секунда)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Диапазон загрузки данных:"),
+            dcc.Dropdown(id="download-range", options=[
+                {"label": "1 час", "value": "1hour"},
+                {"label": "1 день", "value": "1day"},
+                {"label": "1 месяц", "value": "1month"},
+            ], value=config["data"]["download_range"], style={"width": "200px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Период времени для загрузки исторических данных (например, 1 день)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("WebSocket интервал для 1 часа:"),
+            dcc.Dropdown(id="websocket-interval-1hour", options=[
+                {"label": "1 секунда", "value": "1s"},
+                {"label": "1 минута", "value": "1m"},
+                {"label": "15 минут", "value": "15m"},
+                {"label": "1 час", "value": "1h"},
+            ], value=config["data"]["websocket_intervals"]["1hour"], style={"width": "200px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Интервал обновления данных WebSocket для диапазона 1 час."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("WebSocket интервал для 1 дня:"),
+            dcc.Dropdown(id="websocket-interval-1day", options=[
+                {"label": "1 секунда", "value": "1s"},
+                {"label": "1 минута", "value": "1m"},
+                {"label": "15 минут", "value": "15m"},
+                {"label": "1 час", "value": "1h"},
+            ], value=config["data"]["websocket_intervals"]["1day"], style={"width": "200px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Интервал обновления данных WebSocket для диапазона 1 день."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("WebSocket интервал для 1 месяца:"),
+            dcc.Dropdown(id="websocket-interval-1month", options=[
+                {"label": "1 секунда", "value": "1s"},
+                {"label": "1 минута", "value": "1m"},
+                {"label": "15 минут", "value": "15m"},
+                {"label": "1 час", "value": "1h"},
+            ], value=config["data"]["websocket_intervals"]["1month"], style={"width": "200px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Интервал обновления данных WebSocket для диапазона 1 месяц."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Минимальное количество записей:"),
+            dcc.Input(id="min-records", type="number", value=config["data"]["min_records"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Минимальное количество записей для обучения модели (например, 60)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Период обучения модели (сек):"),
+            dcc.Input(id="train-interval", type="number", value=config["data"]["train_interval"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели (например, 30)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Максимальная глубина модели:"),
+            dcc.Input(id="max-depth", type="number", value=config["model"]["max_depth"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Максимальная глубина деревьев в случайbog лесу. 0 = без ограничений."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Количество деревьев (n_estimators):"),
+            dcc.Input(id="n_estimators", type="number", value=config["model"]["n_estimators"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Число деревьев в случайном лесу. Большее значение увеличивает точность, но замедляет обучение (рекомендуется 50-200)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Период обучения модели (минуты):"),
+            dcc.Input(id="train-window-minutes", type="number", value=config["model"]["train_window_minutes"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Количество минут данных для обучения модели (например, 150)."),
+        ], style={"display": "flex", "align-items": "center"}),
         html.Button("Применить", id="apply-settings"),
     ])

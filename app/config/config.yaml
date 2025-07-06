@@ -20,7 +20,7 @@ model:
   min_candles: 1
   min_hourly_candles: 1
   n_estimators: 150
-  train_window_minutes: 150
+  train_window_minutes: 60
 timezone: Europe/Moscow
 visual:
   default_time_range: 1day
