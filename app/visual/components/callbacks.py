@@ -14,7 +14,6 @@ import subprocess
 import platform
 from pathlib import Path
 from app.logs.logger import setup_logger
-from threading import Lock
 from app.data.handler import buffer_lock
 
 RESTART_FLAG = Path("restart.flag")
@@ -50,8 +49,10 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
 
 @callback(
     Output("main-graph", "figure"),
-    Output("predictions-graph", "figure"),
-    Output("predictions-graph", "style"),
+    Output("predictions-graph-min", "figure"),
+    Output("predictions-graph-min", "style"),
+    Output("predictions-graph-hour", "figure"),
+    Output("predictions-graph-hour", "style"),
     Output("graph-layout", "data"),
     Input("interval-component", "n_intervals"),
     Input("train-period", "value"),
@@ -81,9 +82,9 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         with buffer_lock:
             if not data_buffer:
                 logger.warning("Data buffer is empty")
-                return go.Figure(), go.Figure(), {"display": "none"}, stored_layout
-            data_copy = list(data_buffer)  # Создаем копию данных
-            df = pd.DataFrame(data_copy) # тут изменили data_buffer на data_copy
+                return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+            data_copy = list(data_buffer)
+            df = pd.DataFrame(data_copy)
 
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -93,7 +94,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
 
         df.set_index("timestamp", inplace=True)
         if df.empty:
-            return go.Figure(), go.Figure(), {"display": "none"}, stored_layout
+            return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
         df = df.resample(f"{interval_seconds.get(interval, 1)}s").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear")
@@ -108,7 +109,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                 text="Данные устарели. Пожалуйста, проверьте соединение.",
                 showarrow=False, font=dict(size=16, color="red")
             )
-            return fig, go.Figure(), {"display": "none"}, stored_layout
+            return fig, go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
 
         gaps = df["timestamp"].diff().dt.total_seconds()
         if gaps.max() > interval_seconds.get(interval, 1) * 1.5:
@@ -118,23 +119,28 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         ranges = {"1hour": pd.Timedelta(hours=1), "1day": pd.Timedelta(days=1), "1month": pd.Timedelta(days=30)}
         default_time_delta = ranges.get(config["data"]["download_range"], pd.Timedelta(days=1))
 
+        # Определяем диапазон оси X в зависимости от autoscale-range
         if autoscale_range == "10min":
             time_delta = pd.Timedelta(minutes=10)
             df = df[df["timestamp"] >= last_time - time_delta]
             x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
+            x_range_pred = [last_time - time_delta, last_time]  # Для графиков предсказаний
         elif autoscale_range == "1hour":
             time_delta = pd.Timedelta(hours=1)
             df = df[df["timestamp"] >= last_time - time_delta]
             x_range = [last_time - time_delta, last_time + pd.Timedelta(minutes=1)]
+            x_range_pred = [last_time - time_delta, last_time]  # Для графиков предсказаний
         else:
             time_delta = default_time_delta
             if stored_layout and "xaxis.range[0]" in stored_layout:
                 x_range = [pd.to_datetime(stored_layout["xaxis.range[0]"]), pd.to_datetime(stored_layout["xaxis.range[1]"])]
+                x_range_pred = x_range  # Используем тот же диапазон для предсказаний
             else:
                 x_range = [last_time - time_delta, last_time]
+                x_range_pred = [last_time - time_delta, last_time]
 
         if df.empty:
-            return go.Figure(), go.Figure(), {"display": "none"}, stored_layout
+            return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
 
         show_candles = "candles" in (show_candles or [])
         df_candles = df
@@ -158,19 +164,21 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         y_range = [min_price * 0.995, max_price * 1.005]
 
         error_band_width = config["visual"]["error_band_min"]
-        mse, mae, pred_count = None, None, 0
+        mse_min, mae_min, mse_hour, mae_hour, pred_count = None, None, None, None, 0
         pred_df = pd.DataFrame()
         try:
             if os.path.exists("logs/predictions.csv") and os.path.getsize("logs/predictions.csv") > 0:
                 with buffer_lock:
                     pred_df = pd.read_csv("logs/predictions.csv", encoding='utf-8')
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"])
-                pred_df = pred_df[pred_df["timestamp"] >= (current_time - pd.Timedelta(hours=1))]
+                pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]  # Фильтруем по выбранному диапазону
                 if len(pred_df) > 1:
-                    mse = np.mean(pred_df["min_error"] ** 2) if forecast_range == "1min" else np.mean(pred_df["hour_error"] ** 2)
-                    mae = np.mean(pred_df["min_error"]) if forecast_range == "1min" else np.mean(pred_df["hour_error"])
+                    mse_min = np.mean(pred_df["min_error"] ** 2)
+                    mae_min = np.mean(pred_df["min_error"])
+                    mse_hour = np.mean(pred_df["hour_error"] ** 2)
+                    mae_hour = np.mean(pred_df["hour_error"])
                     pred_count = len(pred_df)
-                    error_band_width = max(mae * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"])
+                    error_band_width = max(mae_min * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"]) if forecast_range == "1min" else max(mae_hour * config["visual"]["error_band_multiplier"], config["visual"]["error_band_min"])
         except Exception as e:
             logger.error(f"Failed to read logs/predictions.csv: {e}")
 
@@ -183,7 +191,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             if prediction is not None:
                 fig.add_trace(go.Scatter(
                     x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
-                    mode="lines+markers", name=f"Прогноз ({forecast_range})",
+                    mode="lines+markers", name=f"Прогноз ({'1 минута' if forecast_range == '1min' else '1 час'})",
                     line=dict(color=config["visual"]["predicted_price_color"])
                 ))
                 if show_band:
@@ -195,10 +203,10 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
                         name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
                     ))
 
-        if mse is not None:
+        if mse_min is not None:
             fig.add_annotation(
                 xref="paper", yref="paper", x=0.05, y=0.95,
-                text=f"MSE: {mse:.2f}, MAE: {mae:.2f}, Количество: {pred_count}",
+                text=f"MSE: {mse_min if forecast_range == '1min' else mse_hour:.2f}, MAE: {mae_min if forecast_range == '1min' else mae_hour:.2f}, Количество: {pred_count}",
                 showarrow=False, font=dict(size=12, color="white")
             )
 
@@ -217,40 +225,66 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
             margin=dict(b=100)
         )
 
-        pred_fig = go.Figure()
-        pred_style = {"display": "block" if not pred_df.empty else "none"}
+        pred_fig_min = go.Figure()
+        pred_fig_hour = go.Figure()
+        pred_style_min = {"display": "block" if not pred_df.empty else "none"}
+        pred_style_hour = {"display": "block" if not pred_df.empty else "none"}
         if not pred_df.empty:
             filtered_pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
             if not filtered_pred_df.empty:
-                pred_fig.add_trace(go.Scatter(
+                # Минутный график
+                pred_fig_min.add_trace(go.Scatter(
                     x=filtered_pred_df["timestamp"], y=filtered_pred_df["actual_price"],
                     mode="lines", name="Фактическая цена", line=dict(color=config["visual"]["real_price_color"])
                 ))
-                pred_fig.add_trace(go.Scatter(
-                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["min_pred" if forecast_range == "1min" else "hour_pred"],
-                    mode="lines", name="Предсказанная цена", line=dict(color=config["visual"]["predicted_price_color"])
+                pred_fig_min.add_trace(go.Scatter(
+                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["min_pred"],
+                    mode="lines", name="Предсказанная цена (1 мин)", line=dict(color=config["visual"]["predicted_price_color"])
                 ))
-                pred_fig.update_layout(
-                    title="BTC/USDT: Фактические и предсказанные цены",
+                pred_fig_min.update_layout(
+                    title="BTC/USDT: Фактические и предсказанные цены (1 минута)",
                     xaxis_title="Время (MSK)",
                     yaxis_title="Цена (USDT)",
-                    xaxis_range=x_range,
+                    xaxis_range=x_range_pred,  # Используем диапазон, соответствующий autoscale-range
                     yaxis_range=y_range,
                     showlegend=True,
                     height=400,
                     template="plotly_dark",
                     dragmode="zoom",
-                    uirevision="predictions-graph",
+                    uirevision="predictions-graph-min",
+                    xaxis=dict(tickformat="%Y-%m-%d %H:%M:%S", tickangle=45)
+                )
+
+                # Часовой график
+                pred_fig_hour.add_trace(go.Scatter(
+                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["actual_price"],
+                    mode="lines", name="Фактическая цена", line=dict(color=config["visual"]["real_price_color"])
+                ))
+                pred_fig_hour.add_trace(go.Scatter(
+                    x=filtered_pred_df["timestamp"], y=filtered_pred_df["hour_pred"],
+                    mode="lines", name="Предсказанная цена (1 час)", line=dict(color=config["visual"]["predicted_price_color"])
+                ))
+                pred_fig_hour.update_layout(
+                    title="BTC/USDT: Фактические и предсказанные цены (1 час)",
+                    xaxis_title="Время (MSK)",
+                    yaxis_title="Цена (USDT)",
+                    xaxis_range=x_range_pred,  # Используем диапазон, соответствующий autoscale-range
+                    yaxis_range=y_range,
+                    showlegend=True,
+                    height=400,
+                    template="plotly_dark",
+                    dragmode="zoom",
+                    uirevision="predictions-graph-hour",
                     xaxis=dict(tickformat="%Y-%m-%d %H:%M:%S", tickangle=45)
                 )
 
         logger.debug("Graph updated successfully")
-        return fig, pred_fig, pred_style, stored_layout
+        return fig, pred_fig_min, pred_style_min, pred_fig_hour, pred_style_hour, stored_layout
 
     except Exception as e:
         logger.error(f"Error in update_graph: {e}", exc_info=True)
-        return go.Figure(), go.Figure(), {"display": "none"}, stored_layout
-
+        return go.Figure(), go.Figure(), {"display": "none"}, go.Figure(), {"display": "none"}, stored_layout
+    
 @callback(
     Output("download-btn", "n_clicks"),
     Input("download-btn", "n_clicks")
@@ -276,10 +310,17 @@ def download_data(n_clicks):
     Input("websocket-interval-1day", "value"),
     Input("websocket-interval-1month", "value"),
     Input("min-records", "value"),
-    Input("train-interval", "value")
+    Input("train-interval", "value"),
+    Input("max-depth", "value"),
+    Input("n_estimators", "value"),
+    Input("min-candles", "value"),
+    Input("min-hourly-candles", "value"),
+    Input("train-window-minutes", "value")
 )
 def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interval, download_range,
-                    websocket_interval_1hour, websocket_interval_1day, websocket_interval_1month, min_records, train_interval):
+                    websocket_interval_1hour, websocket_interval_1day, websocket_interval_1month,
+                    min_records, train_interval, max_depth, n_estimators, min_candles, min_hourly_candles,
+                    train_window_minutes):
     """Обновление настроек"""
     if n_clicks:
         try:
@@ -294,31 +335,36 @@ def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interv
             new_config["data"]["websocket_intervals"]["1month"] = websocket_interval_1month if websocket_interval_1month else new_config["data"]["websocket_intervals"]["1month"]
             new_config["data"]["min_records"] = int(min_records) if min_records else new_config["data"]["min_records"]
             new_config["data"]["train_interval"] = int(train_interval) if train_interval else new_config["data"]["train_interval"]
+            new_config["model"]["max_depth"] = int(max_depth) if max_depth else new_config["model"]["max_depth"]
+            new_config["model"]["n_estimators"] = int(n_estimators) if n_estimators else new_config["model"]["n_estimators"]
+            new_config["model"]["min_candles"] = int(min_candles) if min_candles else new_config["model"]["min_candles"]
+            new_config["model"]["min_hourly_candles"] = int(min_hourly_candles) if min_hourly_candles else new_config["model"]["min_hourly_candles"]
+            new_config["model"]["train_window_minutes"] = int(train_window_minutes) if train_window_minutes else new_config["model"]["train_window_minutes"]
             save_config(new_config)
             logger.info("Settings saved to config.yaml")
-            
+
             # Перезапуск WebSocket
             import asyncio
             async def restart_websocket():
                 pass  # Замените на реальную логику перезапуска WebSocket
             asyncio.run(restart_websocket())
-            
+
             # Перезапуск Dash
             current_dir = os.path.dirname(os.path.abspath(__file__))
             main_py_path = os.path.join(current_dir, "..", "..", "..", "main.py")
             main_py_path = os.path.normpath(main_py_path)
-            
+
             if not os.path.exists(main_py_path):
                 logger.error(f"main.py not found at {main_py_path}")
                 return n_clicks
-            
+
             if sys.platform == "win32":
                 subprocess.run(["taskkill", "/IM", "python.exe", "/F"], check=False)
                 subprocess.Popen(["python", main_py_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
             else:
                 subprocess.run(["pkill", "-f", "dash"], check=False)
                 subprocess.Popen(["python", main_py_path])
-            
+
             logger.info("Dash and WebSocket restarted successfully")
         except Exception as e:
             logger.error(f"Error restarting Dash: {e}", exc_info=True)

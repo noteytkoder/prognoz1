@@ -15,6 +15,7 @@ from app.config.manager import load_config
 from threading import Lock
 from pathlib import Path
 
+
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
 logger = setup_logger()
@@ -314,10 +315,6 @@ def get_latest_features():
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
     
-# В handler.py
-import os
-import time
-from pathlib import Path
 
 async def prediction_loop():
     global last_pred_time, predictions
@@ -332,7 +329,10 @@ async def prediction_loop():
     # Инициализация файла с заголовками, если он не существует
     if not os.path.exists(csv_file_path):
         with prediction_file_lock:
-            pd.DataFrame(columns=["timestamp", "actual_price", "min_pred", "hour_pred", "min_error", "hour_error"]).to_csv(csv_file_path, index=False)
+            pd.DataFrame(columns=[
+                "timestamp", "actual_price", "min_pred", "hour_pred", "min_error", "hour_error",
+                "min_pred_time", "hour_pred_time", "min_change_pct", "hour_change_pct"
+            ]).to_csv(csv_file_path, index=False)
             logger.info(f"Initialized empty predictions.csv with headers")
 
     while True:
@@ -352,8 +352,28 @@ async def prediction_loop():
                 hour_prediction = predict_hourly(features_df)
 
                 pred_timestamp = pd.Timestamp.now(tz=config.get("timezone", "Europe/Moscow"))
+                min_pred_time = (pred_timestamp + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
+                hour_pred_time = (pred_timestamp + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+
+                # Вычисляем проценты изменения
+                min_change_pct = ((min_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
+                hour_change_pct = ((hour_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
+                min_change_str = f"{min_change_pct:+.2f}%"
+                hour_change_str = f"{hour_change_pct:+.2f}%"
+
                 if min_prediction is not None and hour_prediction is not None:
-                    predictions_logger.info("", extra={"min_pred": min_prediction, "hour_pred": hour_prediction})
+                    # Логируем в predictions.log
+                    predictions_logger.info(
+                        "",
+                        extra={
+                            "timestamp": str(pred_timestamp),
+                            "actual_price": actual_price,
+                            "min_pred": min_prediction,
+                            "min_pred_time": min_pred_time,
+                            "hour_pred": hour_prediction,
+                            "hour_pred_time": hour_pred_time,
+                        }
+                    )
 
                     prediction_record = {
                         "timestamp": pred_timestamp,
@@ -361,7 +381,11 @@ async def prediction_loop():
                         "min_pred": min_prediction,
                         "hour_pred": hour_prediction,
                         "min_error": abs(actual_price - min_prediction),
-                        "hour_error": abs(actual_price - hour_prediction)
+                        "hour_error": abs(actual_price - hour_prediction),
+                        "min_pred_time": min_pred_time,
+                        "hour_pred_time": hour_pred_time,
+                        "min_change_pct": min_change_pct,
+                        "hour_change_pct": hour_change_pct
                     }
                     predictions.append(prediction_record)
                     if len(predictions) > max_predictions:
@@ -380,7 +404,7 @@ async def prediction_loop():
                         except PermissionError as e:
                             logger.warning(f"PermissionError on attempt {attempt+1} in prediction_loop: {e}")
                             if attempt < retries - 1:
-                                time.sleep(0.1)  # Небольшая пауза перед повторной попыткой
+                                time.sleep(0.1)
                             else:
                                 logger.error(f"Failed to save predictions after {retries} attempts: {e}")
                                 raise

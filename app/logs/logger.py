@@ -1,4 +1,3 @@
-# app/logs/logger.py
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -12,7 +11,7 @@ def setup_logger():
         os.makedirs("logs", exist_ok=True)
         handler = RotatingFileHandler(
             "logs/app.log",
-            maxBytes=100*10*1024*1024,  # 10 МБ
+            maxBytes=100*10*1024*1024,
             backupCount=5
         )
         formatter = logging.Formatter("%(asctime)s - %(levelname)s: %(message)s")
@@ -22,7 +21,7 @@ def setup_logger():
     return logger
 
 def setup_predictions_logger():
-    """Настройка логгера для прогнозов"""
+    """Настройка логгера для прогнозов на русском языке"""
     logger = logging.getLogger("PredictionsLogger")
     logger.setLevel(logging.INFO)
     
@@ -30,10 +29,14 @@ def setup_predictions_logger():
         os.makedirs("logs", exist_ok=True)
         handler = RotatingFileHandler(
             "logs/predictions.log",
-            maxBytes=10*1024*1024,  # 10 МБ
+            maxBytes=100*10*1024*1024,  
             backupCount=3
         )
-        formatter = logging.Formatter("%(asctime)s, прогноз_1мин=%(min_pred)f, прогноз_1час=%(hour_pred)f")
+        formatter = logging.Formatter(
+            "расчетное_время=%(timestamp)s, фактическая_цена=%(actual_price).4f, "
+            "прогноз_на_1мин=%(min_pred).4f, целевое_время_1мин=%(min_pred_time)s, "
+            "прогноз_на_1час=%(hour_pred).4f, целевое_время_1час=%(hour_pred_time)s"
+        )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     

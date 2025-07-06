@@ -108,7 +108,7 @@ def serve_logtotal():
 
 @dash_app.server.route('/logs/predictions.table', methods=['GET'])
 def serve_predictions_table():
-    """Возвращает HTML-таблицу с последней записью из predictions.csv с расчетом времени прогнозов"""
+    """Возвращает HTML-таблицу с последней записью из predictions.csv"""
     try:
         csv_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
@@ -131,39 +131,25 @@ def serve_predictions_table():
 
         last_pred = pred_df.iloc[-1]
 
-        # Парсим timestamp
-        timestamp_raw = pd.to_datetime(last_pred['timestamp'])
-        timestamp = timestamp_raw.strftime('%Y-%m-%d %H:%M:%S')
-
-        # Считаем прогнозные времена
-        min_pred_timestamp = (timestamp_raw + pd.Timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-        hour_pred_timestamp = (timestamp_raw + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
-
-        # Форматируем значения цен
+        # Форматируем значения
+        timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         actual_price = round(float(last_pred['actual_price']), 4)
         min_pred = round(float(last_pred['min_pred']), 4)
         hour_pred = round(float(last_pred['hour_pred']), 4)
-
-        # Вычисляем проценты
-        if actual_price > 0:
-            min_change = ((min_pred - actual_price) / actual_price) * 100
-            hour_change = ((hour_pred - actual_price) / actual_price) * 100
-            min_change_str = f"{min_change:+.2f}%"
-            hour_change_str = f"{hour_change:+.2f}%"
-        else:
-            min_change_str = hour_change_str = "N/A"
+        min_change_str = f"{last_pred['min_change_pct']:+.2f}%"
+        hour_change_str = f"{last_pred['hour_change_pct']:+.2f}%"
+        min_pred_time = last_pred['min_pred_time']
+        hour_pred_time = last_pred['hour_pred_time']
 
         # Формируем строку таблицы
         table_rows = f"""
             <tr>
                 <td>{timestamp}</td>
                 <td>{actual_price:.4f}</td>
-                <td>{min_pred:.4f} ({min_change_str}) <br><small>{min_pred_timestamp}</small></td>
-                <td>{hour_pred:.4f} ({hour_change_str}) <br><small>{hour_pred_timestamp}</small></td>
+                <td>{min_pred:.4f} ({min_change_str}) <br><small>{min_pred_time}</small></td>
+                <td>{hour_pred:.4f} ({hour_change_str}) <br><small>{hour_pred_time}</small></td>
             </tr>
         """
-
-
 
         # Загрузка шаблона
         TEMPLATE_PATH = os.path.join(

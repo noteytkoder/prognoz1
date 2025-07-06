@@ -9,14 +9,14 @@ data:
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1m
+    1day: 1s
     1hour: 1s
     1month: 1m
 indicators:
   rsi_window: 7
   sma_window: 3
 model:
-  max_depth: 15
+  max_depth: 14
   min_candles: 1
   min_hourly_candles: 1
   n_estimators: 150

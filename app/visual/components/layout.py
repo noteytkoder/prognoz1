@@ -10,6 +10,7 @@ def create_layout():
         dcc.Store(id="interval-update", data=config["visual"]["update_interval"])
     ])
 
+# app/visual/layout.py
 def create_online_layout():
     """Макет для онлайн-режима"""
     return html.Div([
@@ -40,7 +41,8 @@ def create_online_layout():
         ], style={"width": "20%", "display": "inline-block", "vertical-align": "top"}),
         html.Div([
             dcc.Graph(id="main-graph", config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToAdd": ["zoom2d", "pan2d", "select2d", "lasso2d"]}),
-            dcc.Graph(id="predictions-graph", style={"display": "none"}, config={"displayModeBar": True}),
+            dcc.Graph(id="predictions-graph-min", style={"display": "none"}, config={"displayModeBar": True}),
+            dcc.Graph(id="predictions-graph-hour", style={"display": "none"}, config={"displayModeBar": True}),
         ], style={"width": "80%", "display": "inline-block"}),
     ])
 
@@ -86,5 +88,15 @@ def create_settings_panel():
         dcc.Input(id="min-records", type="number", value=config["data"]["min_records"]),
         html.Label("Период обучения модели (сек):"),
         dcc.Input(id="train-interval", type="number", value=config["data"]["train_interval"]),
+        html.Label("Максимальная глубина модели:"),
+        dcc.Input(id="max-depth", type="number", value=config["model"]["max_depth"]),
+        html.Label("Количество деревьев (n_estimators):"),
+        dcc.Input(id="n_estimators", type="number", value=config["model"]["n_estimators"]),
+        html.Label("Минимальное количество свечей (минуты):"),
+        dcc.Input(id="min-candles", type="number", value=config["model"]["min_candles"]),
+        html.Label("Минимальное количество свечей (часы):"),
+        dcc.Input(id="min-hourly-candles", type="number", value=config["model"]["min_hourly_candles"]),
+        html.Label("Период обучения модели (минуты):"),
+        dcc.Input(id="train-window-minutes", type="number", value=config["model"]["train_window_minutes"]),
         html.Button("Применить", id="apply-settings"),
     ])
