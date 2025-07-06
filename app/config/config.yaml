@@ -2,25 +2,25 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 100000
+  buffer_size: 20000
   download_range: 1day
   min_records: 60
   simulation_train_period: 3600
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1m
+    1day: 1s
     1hour: 1s
     1month: 1m
 indicators:
   rsi_window: 7
   sma_window: 3
 model:
-  max_depth: 14
+  max_depth: 15
   min_candles: 1
   min_hourly_candles: 1
   n_estimators: 150
-  train_window_minutes: 60
+  train_window_minutes: 150
 timezone: Europe/Moscow
 visual:
   default_time_range: 1day
