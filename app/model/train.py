@@ -40,19 +40,21 @@ def train_model(df, n_estimators=None, max_depth=None):
         logger.error(f"Error training minute model: {e}")
 
 def train_hourly_model(df):
-    """Обучение модели для почасового прогноза"""
     global hourly_model
     try:
         if len(df) < config["model"]["min_hourly_candles"]:
             logger.warning(f"Insufficient data for hourly training: {len(df)} candles")
             return
-        features = ["close", "rsi", "sma", "volume", "log_volume"]  # Исправлено
+        features = ["close", "rsi", "sma", "volume", "log_volume"]
         target = df["close"].shift(-1)
         valid_idx = target.notna()
         X = df[features][valid_idx]
         y = target[valid_idx]
         if len(X) < config["model"]["min_hourly_candles"]:
             logger.warning(f"Too few valid hourly samples: {len(X)}")
+            return
+        if X.isna().any().any():
+            logger.error(f"NaN values found in features: {X.isna().sum()}")
             return
         model = RandomForestRegressor(
             n_estimators=config["model"]["n_estimators"],

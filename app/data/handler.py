@@ -131,7 +131,10 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
                 "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
             }).interpolate(method="linear")
             df_hour = calculate_indicators(df_hour)
-            train_hourly_model(df_hour)
+            if len(df_hour) < config["model"]["min_hourly_candles"]:
+                logger.warning(f"Too few hourly candles: {len(df_hour)}, required: {config['model']['min_hourly_candles']}")
+            else:
+                train_hourly_model(df_hour)
             
             logger.info("Initial models trained")
     except Exception as e:
@@ -202,6 +205,7 @@ async def consumer_loop(raw_queue):
                 if all(key in item for key in ["timestamp", "open", "high", "low", "close", "volume"]):
                     with buffer_lock:
                         data_buffer.append(item)
+                        logger.debug(f"Added new kline to data_buffer, timestamp: {timestamp}, buffer size: {len(data_buffer)}")
                 else:
                     logger.error(f"Invalid data item: {item}")
                 message_count += 1
@@ -214,7 +218,6 @@ async def consumer_loop(raw_queue):
                 quantity = float(data["q"])
                 trade_buffer.append({"timestamp": timestamp, "quantity": quantity})
 
-                # Update volumes in data_buffer
                 for candle in reversed(data_buffer):
                     if abs((candle["timestamp"] - timestamp).total_seconds()) < interval_seconds.get(interval, 1):
                         candle["volume"] = quantity
@@ -229,7 +232,7 @@ async def watchdog():
     global last_kline_time
     while True:
         await asyncio.sleep(30)
-        if last_kline_time and time.time() - last_kline_time > 120:
+        if last_kline_time and time.time() - last_kline_time > 180:
             logger.error("[watchdog] No Kline data for 2 minutes — creating restart flag!")
             RESTART_FLAG.touch()
             os._exit(0)
@@ -294,50 +297,67 @@ def get_latest_features():
         return None
     
 async def update_errors_loop():
-    """Обновляет фактические цены и ошибки в predictions.csv на основе data_buffer"""
-    global data_buffer
+    logger.info("update_errors_loop started")
     csv_file_path = "logs/predictions.csv"
     interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
-    tolerance_seconds = {"min": 60, "hour": 300}  # Допуск ±1 мин для min_pred_time, ±5 мин для hour_pred_time
+    tolerance_seconds = {"min": 120, "hour": 600}
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
+
+    last_data_buffer = None
+    data_df = None
 
     while True:
         try:
             if not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0:
-                await asyncio.sleep(10)
+                await asyncio.sleep(1)
                 continue
 
             with prediction_file_lock:
                 pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
                 if pred_df.empty:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(1)
                     continue
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
                 pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
                 pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
 
             with buffer_lock:
-                data_df = pd.DataFrame(data_buffer)
-                if data_df.empty:
-                    await asyncio.sleep(10)
+                current_data_buffer = list(data_buffer)
+                if current_data_buffer != last_data_buffer:
+                    data_df = pd.DataFrame(current_data_buffer)
+                    last_data_buffer = current_data_buffer
+                if data_df is None or data_df.empty:
+                    logger.debug("No data in data_df, skipping update")
+                    await asyncio.sleep(1)
                     continue
-                data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])  # Уже tz-aware из process_timestamp
+                data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
 
             updated = False
             for idx, row in pred_df.iterrows():
                 if pd.isna(row["min_actual_price"]) or pd.isna(row["hour_actual_price"]):
                     for pred_type, pred_time in [("min", row["min_pred_time"]), ("hour", row["hour_pred_time"])]:
                         if pd.isna(row[f"{pred_type}_actual_price"]):
-                            # Ищем ближайшую свечу в data_buffer
                             time_diff = (data_df["timestamp"] - pred_time).abs()
-                            if time_diff.min().total_seconds() <= tolerance_seconds[pred_type]:
+                            min_diff = time_diff.min().total_seconds()
+                            if min_diff <= tolerance_seconds[pred_type]:
                                 closest_idx = time_diff.idxmin()
                                 actual_price = data_df.loc[closest_idx, "close"]
                                 pred_df.at[idx, f"{pred_type}_actual_price"] = actual_price
                                 pred_df.at[idx, f"{pred_type}_error"] = abs(actual_price - row[f"{pred_type}_pred"])
                                 updated = True
+                            else:
+                                logger.debug(f"No matching candle for {pred_type}_pred_time={pred_time}, min_diff={min_diff}s")
 
+            # if updated:
+            #     with prediction_file_lock:
+            #         tmp_path = csv_file_path + ".tmp"
+            #         try:
+            #             pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
+            #             os.replace(tmp_path, csv_file_path)
+            #             logger.info(f"Updated errors in {csv_file_path} with {updated} new values")
+            #         except PermissionError as e:
+            #             logger.warning(f"PermissionError while saving updated predictions: {e}")
             if updated:
                 with prediction_file_lock:
                     tmp_path = csv_file_path + ".tmp"
@@ -345,11 +365,15 @@ async def update_errors_loop():
                     os.replace(tmp_path, csv_file_path)
                     logger.debug(f"Updated errors in {csv_file_path}, size: {os.path.getsize(csv_file_path)} bytes")
 
+
+
+
         except Exception as e:
             logger.error(f"Error in update_errors_loop: {e}", exc_info=True)
-        await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+        await asyncio.sleep(5)
 
 async def prediction_loop():
+    logger.info("prediction_loop started")
     global last_pred_time, predictions
     interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
@@ -448,7 +472,7 @@ async def prediction_loop():
                                 logger.error(f"Failed to save predictions after {retries} attempts: {e}")
                                 raise
 
-                last_pred_time = time.time
+                last_pred_time = time.time()
 
         except Exception as e:
             logger.error(f"Error in prediction_loop: {e}", exc_info=True)
@@ -459,23 +483,28 @@ async def prediction_loop():
 
 async def start_binance_websocket():
     await check_network()
-    raw_queue = asyncio.Queue()
+    raw_queue = asyncio.Queue(maxsize=10000)
     range_type = config["data"]["download_range"]
     interval = config["data"]["websocket_intervals"].get(range_type, "1s")
     kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
     trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
 
+    # Вместо await asyncio.gather(...) делаем через create_task
     tasks = [
-        producer_ws(kline_uri, "kline", raw_queue),
-        producer_ws(trade_uri, "aggTrade", raw_queue),
-        consumer_loop(raw_queue),
-        watchdog(),
-        prediction_loop(),
-        update_errors_loop()  # Добавляем новую корутину
+        asyncio.create_task(producer_ws(kline_uri, "kline", raw_queue)),
+        asyncio.create_task(producer_ws(trade_uri, "aggTrade", raw_queue)),
+        asyncio.create_task(consumer_loop(raw_queue)),
+        asyncio.create_task(watchdog()),
+        asyncio.create_task(prediction_loop()),
+        asyncio.create_task(update_errors_loop())
     ]
-    try:
-        await asyncio.gather(*tasks)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        RESTART_FLAG.touch()
-        os._exit(0)
+
+    logger.info("All websocket tasks started")
+    # Ждём все задачи и логируем ошибки, не падая всем циклом
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for idx, res in enumerate(results):
+        if isinstance(res, Exception):
+            logger.error(f"Task {idx} raised: {res}", exc_info=True)
+    logger.error("start_binance_websocket exited, creating restart flag")
+    RESTART_FLAG.touch()
+    os._exit(0)

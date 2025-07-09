@@ -9,15 +9,18 @@ logger = setup_logger()
 config = load_config()
 
 def calculate_indicators(df):
-    """Расчёт технических индикаторов (RSI, SMA, log_volume)"""
     try:
         df["rsi"] = RSIIndicator(df["close"], window=config["indicators"]["rsi_window"]).rsi()
         df["sma"] = SMAIndicator(df["close"], window=config["indicators"]["sma_window"]).sma_indicator()
         df["log_volume"] = np.log1p(df["volume"])
-        df["rsi"] = df["rsi"].fillna(df["rsi"].mean())
-        df["sma"] = df["sma"].fillna(df["sma"].mean())
-        df["log_volume"] = df["log_volume"].fillna(df["log_volume"].mean())
-        # logger.info(f"Indicators calculated, rows: {len(df)}")
+        
+        for col in ["rsi", "sma", "log_volume"]:
+            if df[col].isna().all():
+                logger.warning(f"All values in {col} are NaN, filling with last known value or 0")
+                df[col] = df[col].fillna(method="ffill").fillna(0)
+            else:
+                df[col] = df[col].fillna(df[col].mean())
+        logger.info(f"Indicators calculated, rows: {len(df)}")
         return df
     except Exception as e:
         logger.error(f"Error calculating indicators: {e}")
