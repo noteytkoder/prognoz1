@@ -2,14 +2,14 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 20000
+  buffer_size: 100000
   download_range: 1day
   min_records: 60
   simulation_train_period: 3600
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1s
+    1day: 1m
     1hour: 1s
     1month: 1m
 indicators:

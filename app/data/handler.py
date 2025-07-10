@@ -295,82 +295,179 @@ def get_latest_features():
     except Exception as e:
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
-    
+  
 async def update_errors_loop():
     logger.info("update_errors_loop started")
     csv_file_path = "logs/predictions.csv"
-    interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
-    interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
-    tolerance_seconds = {"min": 120, "hour": 600}
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
+    tolerance_seconds = {"min": 120, "hour": 600}
 
     last_data_buffer = None
     data_df = None
 
     while True:
         try:
+            # Проверка наличия файла
             if not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0:
                 await asyncio.sleep(1)
                 continue
 
+            # Читаем predictions.csv
             with prediction_file_lock:
                 pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
                 if pred_df.empty:
                     await asyncio.sleep(1)
                     continue
+
                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
                 pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
                 pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
 
+            # Получаем данные из буфера
             with buffer_lock:
                 current_data_buffer = list(data_buffer)
                 if current_data_buffer != last_data_buffer:
                     data_df = pd.DataFrame(current_data_buffer)
                     last_data_buffer = current_data_buffer
-                if data_df is None or data_df.empty:
-                    logger.debug("No data in data_df, skipping update")
-                    await asyncio.sleep(1)
-                    continue
-                data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
 
-            updated = False
+            if data_df is None or data_df.empty:
+                await asyncio.sleep(1)
+                continue
+
+            data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
+            now = pd.Timestamp.now(tz=msk_tz)
+
+            updated_count = 0
+
+            # Проход по предсказаниям
             for idx, row in pred_df.iterrows():
-                if pd.isna(row["min_actual_price"]) or pd.isna(row["hour_actual_price"]):
-                    for pred_type, pred_time in [("min", row["min_pred_time"]), ("hour", row["hour_pred_time"])]:
-                        if pd.isna(row[f"{pred_type}_actual_price"]):
-                            time_diff = (data_df["timestamp"] - pred_time).abs()
-                            min_diff = time_diff.min().total_seconds()
-                            if min_diff <= tolerance_seconds[pred_type]:
-                                closest_idx = time_diff.idxmin()
-                                actual_price = data_df.loc[closest_idx, "close"]
-                                pred_df.at[idx, f"{pred_type}_actual_price"] = actual_price
-                                pred_df.at[idx, f"{pred_type}_error"] = abs(actual_price - row[f"{pred_type}_pred"])
-                                updated = True
-                            else:
-                                logger.debug(f"No matching candle for {pred_type}_pred_time={pred_time}, min_diff={min_diff}s")
+                for pred_type in ["min", "hour"]:
+                    actual_col = f"{pred_type}_actual_price"
+                    error_col = f"{pred_type}_error"
+                    pred_time_col = f"{pred_type}_pred_time"
+                    pred_value_col = f"{pred_type}_pred"
 
-            # if updated:
-            #     with prediction_file_lock:
-            #         tmp_path = csv_file_path + ".tmp"
-            #         try:
-            #             pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
-            #             os.replace(tmp_path, csv_file_path)
-            #             logger.info(f"Updated errors in {csv_file_path} with {updated} new values")
-            #         except PermissionError as e:
-            #             logger.warning(f"PermissionError while saving updated predictions: {e}")
-            if updated:
+                    # Уже есть записанное значение — больше не трогаем!
+                    if not pd.isna(row.get(actual_col)):
+                        continue
+
+                    # Нет времени предсказания — пропускаем
+                    pred_time = row.get(pred_time_col)
+                    if pd.isna(pred_time):
+                        continue
+
+                    # Время предсказания ещё не наступило
+                    if pred_time > now:
+                        continue
+
+                    # Пробуем найти свечу
+                    time_diff = (data_df["timestamp"] - pred_time).abs()
+                    min_diff = time_diff.min().total_seconds()
+
+                    if min_diff <= tolerance_seconds[pred_type]:
+                        closest_idx = time_diff.idxmin()
+                        actual_price = data_df.loc[closest_idx, "close"]
+                        pred_df.at[idx, actual_col] = actual_price
+                        pred_df.at[idx, error_col] = abs(actual_price - row[pred_value_col])
+                        updated_count += 1
+
+            # Сохраняем только если что-то изменилось
+            if updated_count > 0:
                 with prediction_file_lock:
                     tmp_path = csv_file_path + ".tmp"
                     pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
                     os.replace(tmp_path, csv_file_path)
-                    logger.debug(f"Updated errors in {csv_file_path}, size: {os.path.getsize(csv_file_path)} bytes")
-
-
-
+                logger.info(f"Updated {updated_count} prediction rows in {csv_file_path}")
 
         except Exception as e:
             logger.error(f"Error in update_errors_loop: {e}", exc_info=True)
+
         await asyncio.sleep(5)
+
+  
+# async def update_errors_loop():
+#     logger.info("update_errors_loop started")
+#     csv_file_path = "logs/predictions.csv"
+#     interval = config["data"]["websocket_intervals"].get(config["data"]["download_range"], "1s")
+#     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
+
+#     tolerance_seconds = {
+#         "min": 120,   # допустимая погрешность при поиске свечи на минутный прогноз
+#         "hour": 600   # допустимая погрешность для часового прогноза
+#     }
+
+#     last_data_buffer = None
+#     data_df = None
+
+#     while True:
+#         try:
+#             # 1. Проверяем, существует ли файл с прогнозами
+#             if not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0:
+#                 await asyncio.sleep(1)
+#                 continue
+
+#             # 2. Загружаем предсказания
+#             with prediction_file_lock:
+#                 pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
+#                 if pred_df.empty:
+#                     await asyncio.sleep(1)
+#                     continue
+
+#                 pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
+#                 pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
+#                 pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
+
+#             # 3. Получаем последние данные из буфера
+#             with buffer_lock:
+#                 current_data_buffer = list(data_buffer)
+#                 if current_data_buffer != last_data_buffer:
+#                     data_df = pd.DataFrame(current_data_buffer)
+#                     last_data_buffer = current_data_buffer
+
+#             if data_df is None or data_df.empty:
+#                 await asyncio.sleep(1)
+#                 continue
+
+#             data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
+#             now = pd.Timestamp.now(tz=msk_tz)
+
+#             updated_count = 0
+
+#             # 4. Обход предсказаний
+#             for idx, row in pred_df.iterrows():
+#                 for pred_type, pred_time in [("min", row["min_pred_time"]), ("hour", row["hour_pred_time"])]:
+#                     # уже есть — пропускаем
+#                     if not pd.isna(row.get(f"{pred_type}_actual_price")):
+#                         continue
+
+#                     # нет времени или оно ещё в будущем — тоже пропускаем
+#                     if pd.isna(pred_time) or pred_time > now:
+#                         continue
+
+#                     # ищем ближайшую свечу
+#                     time_diff = (data_df["timestamp"] - pred_time).abs()
+#                     min_diff = time_diff.min().total_seconds()
+
+#                     if min_diff <= tolerance_seconds[pred_type]:
+#                         closest_idx = time_diff.idxmin()
+#                         actual_price = data_df.loc[closest_idx, "close"]
+#                         pred_df.at[idx, f"{pred_type}_actual_price"] = actual_price
+#                         pred_df.at[idx, f"{pred_type}_error"] = abs(actual_price - row[f"{pred_type}_pred"])
+#                         updated_count += 1
+
+#             # 5. Если есть обновления — сохраняем
+#             if updated_count > 0:
+#                 with prediction_file_lock:
+#                     tmp_path = csv_file_path + ".tmp"
+#                     pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
+#                     os.replace(tmp_path, csv_file_path)
+#                 logger.info(f"Updated {updated_count} prediction rows in {csv_file_path}")
+
+#         except Exception as e:
+#             logger.error(f"Error in update_errors_loop: {e}", exc_info=True)
+
+#         await asyncio.sleep(5)
+
 
 async def prediction_loop():
     logger.info("prediction_loop started")
