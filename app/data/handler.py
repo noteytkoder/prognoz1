@@ -298,32 +298,21 @@ def get_latest_features():
   
 async def update_errors_loop():
     logger.info("update_errors_loop started")
-    csv_file_path = "logs/predictions.csv"
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
     tolerance_seconds = {"min": 120, "hour": 600}
 
+    global predictions
     last_data_buffer = None
     data_df = None
 
     while True:
         try:
-            # Проверка наличия файла
-            if not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0:
+            # Проверка данных в памяти
+            if not predictions:
                 await asyncio.sleep(1)
                 continue
 
-            # Читаем predictions.csv
-            with prediction_file_lock:
-                pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-                if pred_df.empty:
-                    await asyncio.sleep(1)
-                    continue
-
-                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
-                pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
-                pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
-
-            # Получаем данные из буфера
+            # Загружаем данные из буфера
             with buffer_lock:
                 current_data_buffer = list(data_buffer)
                 if current_data_buffer != last_data_buffer:
@@ -339,50 +328,55 @@ async def update_errors_loop():
 
             updated_count = 0
 
-            # Проход по предсказаниям
-            for idx, row in pred_df.iterrows():
-                for pred_type in ["min", "hour"]:
-                    actual_col = f"{pred_type}_actual_price"
-                    error_col = f"{pred_type}_error"
-                    pred_time_col = f"{pred_type}_pred_time"
-                    pred_value_col = f"{pred_type}_pred"
+            # Обход списка предсказаний в памяти
+            with prediction_file_lock:
+                for prediction in predictions:
+                    for pred_type in ["min", "hour"]:
+                        actual_col = f"{pred_type}_actual_price"
+                        error_col = f"{pred_type}_error"
+                        pred_time_col = f"{pred_type}_pred_time"
+                        pred_value_col = f"{pred_type}_pred"
 
-                    # Уже есть записанное значение — больше не трогаем!
-                    if not pd.isna(row.get(actual_col)):
-                        continue
+                        # Уже посчитано
+                        if prediction.get(actual_col) is not None:
+                            continue
 
-                    # Нет времени предсказания — пропускаем
-                    pred_time = row.get(pred_time_col)
-                    if pd.isna(pred_time):
-                        continue
+                        # Время предсказания
+                        pred_time = prediction.get(pred_time_col)
+                        if pred_time is None:
+                            continue
 
-                    # Время предсказания ещё не наступило
-                    if pred_time > now:
-                        continue
+                        pred_time = pd.to_datetime(pred_time).tz_convert(msk_tz)
+                        if pred_time > now:
+                            continue
 
-                    # Пробуем найти свечу
-                    time_diff = (data_df["timestamp"] - pred_time).abs()
-                    min_diff = time_diff.min().total_seconds()
+                        # Находим ближайшее значение
+                        time_diff = (data_df["timestamp"] - pred_time).abs()
+                        if time_diff.empty or time_diff.isnull().all():
+                            continue
 
-                    if min_diff <= tolerance_seconds[pred_type]:
-                        closest_idx = time_diff.idxmin()
-                        actual_price = data_df.loc[closest_idx, "close"]
-                        pred_df.at[idx, actual_col] = actual_price
-                        pred_df.at[idx, error_col] = abs(actual_price - row[pred_value_col])
-                        updated_count += 1
+                        min_diff = time_diff.min()
+                        if pd.isna(min_diff):
+                            continue
 
-            # Сохраняем только если что-то изменилось
+                        if min_diff.total_seconds() <= tolerance_seconds[pred_type]:
+                            closest_idx = time_diff.idxmin()
+                            actual_price = data_df.loc[closest_idx, "close"]
+
+                            if prediction.get(actual_col) is None:
+                                prediction[actual_col] = actual_price
+                                prediction[error_col] = abs(actual_price - prediction[pred_value_col])
+                                updated_count += 1
+
             if updated_count > 0:
-                with prediction_file_lock:
-                    tmp_path = csv_file_path + ".tmp"
-                    pred_df.to_csv(tmp_path, index=False, encoding='utf-8')
-                    os.replace(tmp_path, csv_file_path)
-                logger.info(f"Updated {updated_count} prediction rows in {csv_file_path}")
+                logger.info(f"update_errors_loop: updated {updated_count} predictions in memory")
 
         except Exception as e:
             logger.error(f"Error in update_errors_loop: {e}", exc_info=True)
 
         await asyncio.sleep(5)
+
+
 
   
 # async def update_errors_loop():
@@ -573,7 +567,7 @@ async def prediction_loop():
 
         except Exception as e:
             logger.error(f"Error in prediction_loop: {e}", exc_info=True)
-
+            
         elapsed = time.time() - start
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)

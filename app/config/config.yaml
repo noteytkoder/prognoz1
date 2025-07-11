@@ -9,7 +9,7 @@ data:
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1m
+    1day: 1s
     1hour: 1s
     1month: 1m
 indicators:
