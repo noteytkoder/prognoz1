@@ -7,6 +7,7 @@ __pycache__/
 *.log
 logs/
 *.csv
+logs/predictions.csv
 # Restart flag
 restart.flag
 
