@@ -41,7 +41,7 @@ def serve_predictions_log_text():
         log_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.log')
         )
-        logger.info(f"Serving predictions log file: {log_file_path}")
+        logger.debug(f"Serving predictions log file: {log_file_path}")
 
         if not os.path.exists(log_file_path):
             logger.error(f"Predictions log file not found at {log_file_path}")
@@ -113,7 +113,7 @@ def serve_predictions_table():
         csv_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
         )
-        logger.info(f"Serving predictions CSV file: {csv_file_path}")
+        logger.debug(f"Serving predictions CSV file: {csv_file_path}")
 
         if not os.path.exists(csv_file_path):
             logger.error(f"Predictions file not found at {csv_file_path}")

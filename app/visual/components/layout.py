@@ -18,8 +18,6 @@ def create_online_layout():
         html.Div([
             dcc.Tabs(id="control-tabs", value="controls", children=[
                 dcc.Tab(label="Управление", value="controls", children=[
-                    html.Label("Период обучения (минуты):"),
-                    dcc.Input(id="train-period", type="number", value=config["model"]["train_window_minutes"]),
                     dcc.Checklist(id="show-candles", options=[{"label": "Показать свечи", "value": "candles"}],
                                   value=[]),
                     dcc.Checklist(id="show-error-band", options=[{"label": "Зона погрешности", "value": "show"}],
