@@ -79,7 +79,7 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
                 if last_timestamp is None or kline[0] > last_timestamp:
                     klines.append(kline)
                     last_timestamp = kline[0]
-            logger.info(f"Fetched {len(new_klines)} records for {range_type}, total: {len(klines)}")
+            logger.debug(f"Fetched {len(new_klines)} records for {range_type}, total: {len(klines)}")
             start_time = last_timestamp + (interval_seconds.get(interval, 1) * 1000)
             await asyncio.sleep(0.5)
         
@@ -369,7 +369,7 @@ async def update_errors_loop():
                                 updated_count += 1
 
             if updated_count > 0:
-                logger.info(f"update_errors_loop: updated {updated_count} predictions in memory")
+                logger.debug(f"update_errors_loop: updated {updated_count} predictions in memory")
 
         except Exception as e:
             logger.error(f"Error in update_errors_loop: {e}", exc_info=True)

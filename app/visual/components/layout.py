@@ -121,19 +121,34 @@ def create_settings_panel():
             html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели (например, 30)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
-            html.Label("Максимальная глубина модели:"),
+            html.Label("Максимальная глубина модели (минутная):"),
             dcc.Input(id="max-depth", type="number", value=config["model"]["max_depth"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Максимальная глубина деревьев в случайbog лесу. 0 = без ограничений."),
+            html.Span("?", className="tooltip", title="Максимальная глубина деревьев в случайном лесу для минутной модели. 0 = без ограничений."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
-            html.Label("Количество деревьев (n_estimators):"),
+            html.Label("Количество деревьев (минутная):"),
             dcc.Input(id="n_estimators", type="number", value=config["model"]["n_estimators"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Число деревьев в случайном лесу. Большее значение увеличивает точность, но замедляет обучение (рекомендуется 50-200)."),
+            html.Span("?", className="tooltip", title="Число деревьев в случайном лесу для минутной модели. Большее значение увеличивает точность, но замедляет обучение (рекомендуется 50-200)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
-            html.Label("Период обучения модели (минуты):"),
+            html.Label("Максимальная глубина модели (часовая):"),
+            dcc.Input(id="hourly-max-depth", type="number", value=config["model"]["hourly_max_depth"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Максимальная глубина деревьев в случайном лесу для часовой модели. 0 = без ограничений."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Количество деревьев (часовая):"),
+            dcc.Input(id="hourly-n_estimators", type="number", value=config["model"]["hourly_n_estimators"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Число деревьев в случайном лесу для часовой модели. Большее значение увеличивает точность, но замедляет обучение (рекомендуется 50-200)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Период обучения модели (минутная, минуты):"),
             dcc.Input(id="train-window-minutes", type="number", value=config["model"]["train_window_minutes"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Количество минут данных для обучения модели (например, 150)."),
+            html.Span("?", className="tooltip", title="Количество минут данных для обучения минутной модели (например, 60)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Период обучения модели (часовая, минуты):"),
+            dcc.Input(id="hourly-train-window-minutes", type="number", value=config["model"]["hourly_train_window_minutes"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Количество минут данных для обучения часовой модели (например, 1440)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Button("Применить", id="apply-settings"),
     ])

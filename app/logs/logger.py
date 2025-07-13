@@ -5,7 +5,7 @@ import os
 def setup_logger():
     """Настройка основного логгера с ротацией файлов"""
     logger = logging.getLogger("TradingApp")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     
     if not logger.handlers:
         os.makedirs("logs", exist_ok=True)

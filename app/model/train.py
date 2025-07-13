@@ -15,6 +15,9 @@ def train_model(df, n_estimators=None, max_depth=None):
     """Обучение модели для минутного прогноза"""
     global minute_model
     try:
+        # Ограничение данных по окну обучения
+        window_minutes = config["model"]["train_window_minutes"]
+        df = df.tail(int(window_minutes))  # Ограничение по минутам
         if len(df) < config["model"]["min_candles"]:
             logger.warning(f"Insufficient data for training: {len(df)} candles")
             return
@@ -42,6 +45,9 @@ def train_model(df, n_estimators=None, max_depth=None):
 def train_hourly_model(df):
     global hourly_model
     try:
+        # Ограничение данных по окну обучения для часовой модели
+        window_minutes = config["model"]["hourly_train_window_minutes"]
+        df = df.tail(int(window_minutes / 60))  # Ограничение по часам (перевод минут в часы)
         if len(df) < config["model"]["min_hourly_candles"]:
             logger.warning(f"Insufficient data for hourly training: {len(df)} candles")
             return
@@ -57,8 +63,8 @@ def train_hourly_model(df):
             logger.error(f"NaN values found in features: {X.isna().sum()}")
             return
         model = RandomForestRegressor(
-            n_estimators=config["model"]["n_estimators"],
-            max_depth=config["model"]["max_depth"],
+            n_estimators=config["model"]["hourly_n_estimators"],
+            max_depth=config["model"]["hourly_max_depth"],
             random_state=42
         )
         model.fit(X, y)
@@ -74,7 +80,6 @@ def predict(features):
     global minute_model
     try:
         if minute_model is None:
-            # logger.warning("Minute model not trained")
             return None
         return minute_model.predict(features)[0]
     except Exception as e:
@@ -86,7 +91,6 @@ def predict_hourly(features):
     global hourly_model
     try:
         if hourly_model is None:
-            # logger.warning("Hourly model not trained")
             return None
         return hourly_model.predict(features)[0]
     except Exception as e:

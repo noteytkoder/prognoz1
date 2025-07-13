@@ -20,7 +20,7 @@ def calculate_indicators(df):
                 df[col] = df[col].fillna(method="ffill").fillna(0)
             else:
                 df[col] = df[col].fillna(df[col].mean())
-        logger.info(f"Indicators calculated, rows: {len(df)}")
+        logger.debug(f"Indicators calculated, rows: {len(df)}")
         return df
     except Exception as e:
         logger.error(f"Error calculating indicators: {e}")
