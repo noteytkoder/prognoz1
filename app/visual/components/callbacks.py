@@ -12,6 +12,7 @@ import os
 import sys
 import subprocess
 import platform
+import psutil  # Добавляем psutil
 from pathlib import Path
 from app.logs.logger import setup_logger
 from app.data.handler import buffer_lock
@@ -19,6 +20,9 @@ import pytz
 
 RESTART_FLAG = Path("restart.flag")
 logger = setup_logger()
+
+# Время запуска приложения для расчета времени работы
+APP_START_TIME = time.time()
 
 # Cache for resampled dataframe and predictions
 cached_df = None
@@ -227,7 +231,7 @@ def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_inte
     Output("pred-min-layout", "data"),
     Output("pred-hour-layout", "data"),
     Input("interval-component", "n_intervals"),
-    Input("train-window-minutes", "value"),  # Заменили train-period на train-window-minutes
+    Input("train-window-minutes", "value"),
     Input("show-candles", "value"),
     Input("show-error-band", "value"),
     Input("forecast-range", "value"),
@@ -458,3 +462,55 @@ def restart_application(n_clicks):
     except Exception as e:
         logger.error(f"Ошибка при попытке перезапуска: {e}")
     return n_clicks
+
+@callback(
+    Output("cpu-usage", "children"),
+    Output("memory-usage", "children"),
+    Output("uptime", "children"),
+    Output("server-health", "children"),
+    Input("server-status-interval", "n_intervals"),
+    prevent_initial_call=True
+)
+def update_server_status(n_intervals):
+    """Обновление статуса сервера"""
+    try:
+        # Получение загрузки CPU
+        cpu_usage = psutil.cpu_percent(interval=1)
+        
+        # Получение использования памяти
+        memory = psutil.virtual_memory()
+        memory_usage = memory.percent
+        
+        # Расчет времени работы приложения
+        uptime_seconds = time.time() - APP_START_TIME
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{int(days)}д {int(hours)}ч {int(minutes)}м {int(seconds)}с"
+        
+        # Проверка состояния сервера
+        health_status = "ОК"
+        if cpu_usage > 90 or memory_usage > 90:
+            health_status = "Высокая нагрузка"
+            logger.warning(f"High server load detected: CPU={cpu_usage}%, Memory={memory_usage}%")
+        elif cpu_usage > 75 or memory_usage > 75:
+            health_status = "Повышенная нагрузка"
+            logger.debug(f"Elevated server load: CPU={cpu_usage}%, Memory={memory_usage}%")
+        
+        logger.debug(f"Server status updated: CPU={cpu_usage}%, Memory={memory_usage}%, Uptime={uptime_str}, Health={health_status}")
+        
+        return (
+            f"Загрузка CPU: {cpu_usage:.1f}%",
+            f"Использование памяти: {memory_usage:.1f}%",
+            f"Время работы сервера: {uptime_str}",
+            f"Статус: {health_status}"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error in update_server_status: {e}", exc_info=True)
+        return (
+            "Загрузка CPU: Ошибка",
+            "Использование памяти: Ошибка",
+            f"Время работы сервера: Ошибка",
+            "Статус: Ошибка"
+        )

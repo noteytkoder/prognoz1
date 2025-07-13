@@ -9,8 +9,8 @@ data:
   train_interval: 30
   volume_source: aggTrades
   websocket_intervals:
-    1day: 1m
-    1hour: 1m
+    1day: 1s
+    1hour: 1s
     1month: 1m
 indicators:
   rsi_window: 7
@@ -33,6 +33,7 @@ visual:
   log_refresh_interval: 2000
   predicted_price_color: red
   real_price_color: blue
+  server_status_interval: 5000
   show_error_band: true
   stats_interval: 10
   update_interval: 2000

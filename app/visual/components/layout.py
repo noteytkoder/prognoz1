@@ -5,7 +5,9 @@ def create_layout():
     """Создание макета дашборда"""
     return html.Div([
         html.Div(id="main-content", children=create_online_layout()),
+        html.Div(id="server-status", children=create_server_status_panel()),  # Новый компонент
         dcc.Interval(id="interval-component", interval=config["visual"]["update_interval"], n_intervals=0),
+        dcc.Interval(id="server-status-interval", interval=5000, n_intervals=0),  # Новый интервал для статуса сервера
         dcc.Store(id="graph-layout", data={}),
         dcc.Store(id="interval-update", data=config["visual"]["update_interval"]),
         dcc.Store(id="pred-min-layout", data={}),
@@ -45,8 +47,21 @@ def create_online_layout():
         ], style={"width": "80%", "display": "inline-block"}),
     ])
 
+def create_server_status_panel():
+    """Создание панели статуса сервера"""
+    return html.Div([
+        html.H3("Статус сервера", style={"margin-top": "20px"}),
+        html.Div(id="server-status-content", children=[
+            html.P("Загрузка CPU: ...%", id="cpu-usage"),
+            html.P("Использование памяти: ...%", id="memory-usage"),
+            html.P("Время работы сервера: ...", id="uptime"),
+            html.P("Статус: ...", id="server-health")
+        ], style={"border": "1px solid #444", "padding": "10px", "margin": "10px"}),
+    ])
+
 def create_settings_panel():
     """Создание панели настроек с всплывающими подсказками"""
+    # Оставляем без изменений
     return html.Div([
         html.H3("Настройки", style={"margin-top": "20px"}),
         html.Div([
@@ -116,7 +131,7 @@ def create_settings_panel():
         html.Div([
             html.Label("Период обучения модели (сек):"),
             dcc.Input(id="train-interval", type="number", value=config["data"]["train_interval"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели (например, 30)."),
+            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели ( например, 30)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Максимальная глубина модели (минутная):"),
