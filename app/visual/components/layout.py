@@ -61,7 +61,6 @@ def create_server_status_panel():
 
 def create_settings_panel():
     """Создание панели настроек с всплывающими подсказками"""
-    # Оставляем без изменений
     return html.Div([
         html.H3("Настройки", style={"margin-top": "20px"}),
         html.Div([
@@ -129,9 +128,14 @@ def create_settings_panel():
             html.Span("?", className="tooltip", title="Минимальное количество записей для обучения модели (например, 60)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
-            html.Label("Период обучения модели (сек):"),
+            html.Label("Интервал переобучения минутной модели (сек):"),
             dcc.Input(id="train-interval", type="number", value=config["data"]["train_interval"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели ( например, 30)."),
+            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением минутной модели (например, 300 = 5 минут)."),
+        ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Интервал переобучения часовой модели (сек):"),
+            dcc.Input(id="hourly-train-interval", type="number", value=config["data"]["hourly_train_interval"], style={"width": "100px", "margin": "10px"}),
+            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением часовой модели (например, 1800 = 30 минут)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Максимальная глубина модели (минутная):"),

@@ -1,3 +1,4 @@
+# app/data/handler.py
 import pandas as pd
 import websockets
 import json
@@ -15,7 +16,6 @@ from app.config.manager import load_config
 from threading import Lock
 from pathlib import Path
 
-
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
 logger = setup_logger()
@@ -26,7 +26,7 @@ data_buffer = deque(maxlen=config["data"]["buffer_size"])
 trade_buffer = deque(maxlen=config["data"]["buffer_size"])
 raw_queue = asyncio.Queue()
 
-buffer_lock = threading.Lock() # заглушка
+buffer_lock = threading.Lock()
 
 last_train_time = 0
 predictions = []
@@ -171,7 +171,6 @@ async def producer_ws(uri, name, raw_queue):
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
 
-
 # Consumer: processes queue into buffer
 async def consumer_loop(raw_queue):
     message_count = 0
@@ -226,7 +225,6 @@ async def consumer_loop(raw_queue):
         except Exception as e:
             logger.error(f"[consumer] Error: {e}")
 
-
 # Watchdog: monitors if kline data stops arriving
 async def watchdog():
     global last_kline_time
@@ -236,7 +234,6 @@ async def watchdog():
             logger.error("[watchdog] No Kline data for 2 minutes — creating restart flag!")
             RESTART_FLAG.touch()
             os._exit(0)
-
 
 cached_df = None
 last_buffer_update = 0
@@ -376,6 +373,58 @@ async def update_errors_loop():
 
         await asyncio.sleep(1)
 
+async def retrain_loop():
+    """Периодическое переобучение моделей"""
+    global last_train_time
+    logger.info("retrain_loop started")
+    train_interval = config["data"]["train_interval"]
+    hourly_train_interval = hourly_train_interval = config["data"]["hourly_train_interval"]
+
+    while True:
+        try:
+            current_time = time.time()
+            with buffer_lock:
+                if len(data_buffer) < config["data"]["min_records"]:
+                    logger.warning(f"Insufficient data for retraining: {len(data_buffer)} records")
+                    await asyncio.sleep(train_interval)
+                    continue
+
+                df = pd.DataFrame(data_buffer)
+                df = df.drop_duplicates(subset=["timestamp"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df.set_index("timestamp", inplace=True)
+                df = df.sort_index()
+                df = calculate_indicators(df)
+
+                # Минутная модель
+                if current_time - last_train_time >= train_interval:
+                    df_min = df.resample("1min").agg({
+                        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+                    }).interpolate(method="linear").dropna()
+                    df_min = calculate_indicators(df_min)
+                    if len(df_min) >= config["model"]["min_candles"]:
+                        train_model(df_min)
+                        last_train_time = current_time
+                        logger.info("Minutely model retrained")
+                    else:
+                        logger.warning(f"Too few minute candles for retraining: {len(df_min)}")
+
+                # Часовая модель
+                if current_time - last_train_time >= hourly_train_interval:
+                    df_hour = df.resample("1h").agg({
+                        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+                    }).interpolate(method="linear").dropna()
+                    df_hour = calculate_indicators(df_hour)
+                    if len(df_hour) >= config["model"]["min_hourly_candles"]:
+                        train_hourly_model(df_hour)
+                        logger.info("Hourly model retrained")
+                    else:
+                        logger.warning(f"Too few hourly candles for retraining: {len(df_hour)}")
+
+        except Exception as e:
+            logger.error(f"Error in retrain_loop: {e}", exc_info=True)
+
+        await asyncio.sleep(train_interval)
 
 async def prediction_loop():
     logger.info("prediction_loop started")
@@ -494,14 +543,15 @@ async def start_binance_websocket():
     kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
     trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
 
-    # Вместо await asyncio.gather(...) делаем через create_task
+    # Добавляем задачу retrain_loop
     tasks = [
         asyncio.create_task(producer_ws(kline_uri, "kline", raw_queue)),
         asyncio.create_task(producer_ws(trade_uri, "aggTrade", raw_queue)),
         asyncio.create_task(consumer_loop(raw_queue)),
         asyncio.create_task(watchdog()),
         asyncio.create_task(prediction_loop()),
-        asyncio.create_task(update_errors_loop())
+        asyncio.create_task(update_errors_loop()),
+        asyncio.create_task(retrain_loop())  # Новая задача для переобучения
     ]
 
     logger.info("All websocket tasks started")

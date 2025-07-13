@@ -4,9 +4,10 @@ auth:
 data:
   buffer_size: 50000
   download_range: 1day
+  hourly_train_interval: 1800
   min_records: 60
   simulation_train_period: 3600
-  train_interval: 30
+  train_interval: 300
   volume_source: aggTrades
   websocket_intervals:
     1day: 1s

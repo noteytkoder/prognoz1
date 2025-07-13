@@ -409,6 +409,7 @@ def download_data(n_clicks):
     Input("websocket-interval-1month", "value"),
     Input("min-records", "value"),
     Input("train-interval", "value"),
+    Input("hourly-train-interval", "value"),
     Input("max-depth", "value"),
     Input("n_estimators", "value"),
     Input("hourly-max-depth", "value"),
@@ -418,8 +419,8 @@ def download_data(n_clicks):
 )
 def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interval, download_range,
                     websocket_interval_1hour, websocket_interval_1day, websocket_interval_1month,
-                    min_records, train_interval, max_depth, n_estimators, hourly_max_depth,
-                    hourly_n_estimators, train_window_minutes, hourly_train_window_minutes):
+                    min_records, train_interval, hourly_train_interval, max_depth, n_estimators,
+                    hourly_max_depth, hourly_n_estimators, train_window_minutes, hourly_train_window_minutes):
     """Обновление настроек"""
     if n_clicks:
         try:
@@ -434,6 +435,7 @@ def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interv
             new_config["data"]["websocket_intervals"]["1month"] = websocket_interval_1month if websocket_interval_1month else new_config["data"]["websocket_intervals"]["1month"]
             new_config["data"]["min_records"] = int(min_records) if min_records else new_config["data"]["min_records"]
             new_config["data"]["train_interval"] = int(train_interval) if train_interval else new_config["data"]["train_interval"]
+            new_config["data"]["hourly_train_interval"] = int(hourly_train_interval) if hourly_train_interval else new_config["data"]["hourly_train_interval"]
             new_config["model"]["max_depth"] = int(max_depth) if max_depth else new_config["model"]["max_depth"]
             new_config["model"]["n_estimators"] = int(n_estimators) if n_estimators else new_config["model"]["n_estimators"]
             new_config["model"]["hourly_max_depth"] = int(hourly_max_depth) if hourly_max_depth else new_config["model"]["hourly_max_depth"]
