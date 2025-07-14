@@ -33,6 +33,9 @@ predictions = []
 last_pred_time = 0
 last_kline_time = 0
 RESTART_FLAG = Path("restart.flag")
+# Глобальные переменные
+last_train_time_min = time.time()  # Время последнего переобучения минутной модели
+last_train_time_hour = time.time()  # Время последнего переобучения часовой модели
 
 def process_timestamp(timestamp_ms):
     """Преобразование времени в MSK"""
@@ -373,12 +376,14 @@ async def update_errors_loop():
 
         await asyncio.sleep(1)
 
+
+
 async def retrain_loop():
     """Периодическое переобучение моделей"""
-    global last_train_time
+    global last_train_time_min, last_train_time_hour
     logger.info("retrain_loop started")
-    train_interval = config["data"]["train_interval"]
-    hourly_train_interval = hourly_train_interval = config["data"]["hourly_train_interval"]
+    train_interval = config["data"].get("train_interval", 300)  # По умолчанию 5 минут
+    hourly_train_interval = config["data"].get("hourly_train_interval", 3600)  # По умолчанию 1 час
 
     while True:
         try:
@@ -397,34 +402,36 @@ async def retrain_loop():
                 df = calculate_indicators(df)
 
                 # Минутная модель
-                if current_time - last_train_time >= train_interval:
+                if current_time - last_train_time_min >= train_interval:
                     df_min = df.resample("1min").agg({
                         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
                     }).interpolate(method="linear").dropna()
                     df_min = calculate_indicators(df_min)
-                    if len(df_min) >= config["model"]["min_candles"]:
+                    if len(df_min) >= config["model"].get("min_candles", 1):
                         train_model(df_min)
-                        last_train_time = current_time
-                        logger.info("Minutely model retrained")
+                        last_train_time_min = current_time
+                        logger.info(f"Minutely model retrained, samples={len(df_min)}")
                     else:
                         logger.warning(f"Too few minute candles for retraining: {len(df_min)}")
 
                 # Часовая модель
-                if current_time - last_train_time >= hourly_train_interval:
+                if current_time - last_train_time_hour >= hourly_train_interval:
                     df_hour = df.resample("1h").agg({
                         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
                     }).interpolate(method="linear").dropna()
                     df_hour = calculate_indicators(df_hour)
-                    if len(df_hour) >= config["model"]["min_hourly_candles"]:
+                    if len(df_hour) >= config["model"].get("min_hourly_candles", 1):
                         train_hourly_model(df_hour)
-                        logger.info("Hourly model retrained")
+                        last_train_time_hour = current_time
+                        logger.info(f"Hourly model retrained, samples={len(df_hour)}")
                     else:
                         logger.warning(f"Too few hourly candles for retraining: {len(df_hour)}")
 
+            await asyncio.sleep(train_interval)
         except Exception as e:
             logger.error(f"Error in retrain_loop: {e}", exc_info=True)
+            await asyncio.sleep(train_interval)
 
-        await asyncio.sleep(train_interval)
 
 async def prediction_loop():
     logger.info("prediction_loop started")
