@@ -4,10 +4,10 @@ auth:
 data:
   buffer_size: 50000
   download_range: 1day
-  train_interval: 300
-  hourly_train_interval: 1200
+  hourly_train_interval: 3600
   min_records: 60
   simulation_train_period: 3600
+  train_interval: 60
   volume_source: aggTrades
   websocket_intervals:
     1day: 1m
@@ -18,13 +18,13 @@ indicators:
   sma_window: 3
 model:
   hourly_max_depth: 20
-  hourly_n_estimators: 200
-  hourly_train_window_minutes: 720
+  hourly_n_estimators: 100
+  hourly_train_window_minutes: 1440
   max_depth: 12
   min_candles: 1
   min_hourly_candles: 1
-  n_estimators: 150
-  train_window_minutes: 240
+  n_estimators: 100
+  train_window_minutes: 60
 timezone: Europe/Moscow
 visual:
   default_time_range: 1day
