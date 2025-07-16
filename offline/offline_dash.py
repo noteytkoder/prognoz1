@@ -12,6 +12,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
+from app.config.manager import load_config, load_environment_config
+
+
+config = load_config()
+env_name = config["app_env"]
+env_config = load_environment_config()
 
 # Настройка логирования
 log_dir = "logs"
@@ -878,4 +884,4 @@ def stop_simulation(n_clicks):
 # Запуск приложения
 if __name__ == "__main__":
     logger.info("Starting offline Dash application")
-    app.run(host="0.0.0.0", port=8051, debug=True)
+    app.run(host="0.0.0.0", port=env_config[env_name]["port_offline"], debug=True)

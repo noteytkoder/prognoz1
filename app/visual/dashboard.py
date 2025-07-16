@@ -10,10 +10,11 @@ from flask import send_from_directory
 import requests
 import pandas as pd
 from app.data.handler import buffer_lock
+from app.config.manager import load_config, load_environment_config
 
-# Загружаем конфиг
-with open("app/config/config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+config = load_config()
+env_name = config["app_env"]
+env_config = load_environment_config()
 
 DASH_AUTH_CREDENTIALS = {
     config["auth"]["username"]: config["auth"]["password"]
@@ -33,8 +34,7 @@ def get_file_reversed(file_path):
         lines = f.readlines()
     return ''.join(reversed(lines))
 
-
-@dash_app.server.route('/logs/predictions.log', methods=['GET'])
+@dash_app.server.route(env_config[env_name]["predictions_log_endpoint"], methods=['GET'])
 def serve_predictions_log_text():
     """Возвращает содержимое файла predictions.log в виде текста"""
     try:
@@ -57,8 +57,8 @@ def serve_predictions_log_text():
     except Exception as e:
         logger.error(f"Error serving predictions.log: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-    
-@dash_app.server.route('/logs/predictions.csv', methods=['GET'])
+  
+@dash_app.server.route(env_config[env_name]["csv_endpoiint"], methods=['GET'])
 def serve_predictions_csv():
     """Возвращает содержимое файла predictions.csv в виде текста"""
     try:
@@ -83,7 +83,9 @@ def serve_predictions_csv():
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
 
-@dash_app.server.route('/logs/logtotal', methods=['GET'])
+
+ 
+@dash_app.server.route(env_config[env_name]["logtotal_endpoint"] , methods=['GET'])
 def serve_logtotal():
     try:
         log_file_path = os.path.abspath(
@@ -106,7 +108,7 @@ def serve_logtotal():
         logger.error(f"Error serving logtotal: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
-@dash_app.server.route('/logs/predictions.table', methods=['GET'])
+@dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
 def serve_predictions_table():
     """Возвращает HTML-таблицу с последней записью из predictions.csv"""
     try:
@@ -174,7 +176,7 @@ def serve_predictions_table():
 def start_dash():
     """Запуск сервера Dash"""
     try:
-        dash_app.run(port=8050, host="0.0.0.0")
+        dash_app.run(port=env_config[env_name]["port_online"], host="0.0.0.0")
         logger.info("Dash server started")
     except Exception as e:
         logger.error(f"Dash server error: {e}")

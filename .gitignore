@@ -23,3 +23,6 @@ env/
 # macOS / Linux / Windows system files
 .DS_Store
 Thumbs.db
+
+#env config
+app/config/environment.yaml

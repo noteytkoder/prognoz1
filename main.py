@@ -8,12 +8,16 @@ from app.logs.logger import setup_logger
 import threading
 import signal
 import sys
-from app.config.manager import load_config
 from pathlib import Path
+from app.config.manager import load_config, load_environment_config
+
 
 logger = setup_logger()
 app = FastAPI()
 config = load_config()
+env_name = config["app_env"]
+env_config = load_environment_config()
+
 
 RESTART_FLAG = Path("restart.flag")
 
@@ -73,7 +77,7 @@ def main():
     # Uvicorn (FastAPI) на главном потоке
     try:
         logger.info("Starting FastAPI server with Uvicorn")
-        uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
+        uvicorn.run(app, host="0.0.0.0", port=env_config[env_name]["port_unicorn"], access_log=False)
     except Exception as e:
         logger.error(f"Uvicorn error: {e}", exc_info=True)
         RESTART_FLAG.touch()
