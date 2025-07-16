@@ -252,13 +252,6 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     try:
-        # Обновление периода обучения
-        if train_period and train_period != config["model"]["train_window_minutes"]:
-            new_config = load_config()
-            new_config["model"]["train_window_minutes"] = int(train_period)
-            save_config(new_config)
-            logger.info(f"Train period updated to {train_period} minutes")
-
         # Обновление макетов графиков
         if main_relayout_data and "xaxis.range[0]" in main_relayout_data:
             main_stored_layout = main_relayout_data

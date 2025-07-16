@@ -15,6 +15,7 @@ from app.model.indicators import calculate_indicators
 from app.config.manager import load_config
 from threading import Lock
 from pathlib import Path
+import numpy as np
 
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
@@ -33,9 +34,8 @@ predictions = []
 last_pred_time = 0
 last_kline_time = 0
 RESTART_FLAG = Path("restart.flag")
-# Глобальные переменные
-last_train_time_min = time.time()  # Время последнего переобучения минутной модели
-last_train_time_hour = time.time()  # Время последнего переобучения часовой модели
+last_train_time_min = time.time()
+last_train_time_hour = time.time()
 
 def process_timestamp(timestamp_ms):
     """Преобразование времени в MSK"""
@@ -102,10 +102,20 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
         df = df.drop_duplicates(subset=["timestamp"])
         df.set_index("timestamp", inplace=True)
         df = df.sort_index()
+        
+        # Проверка временных разрывов
         gaps = df.index.to_series().diff().dt.total_seconds()
-        if gaps.max() > interval_seconds.get(interval, 1):
-            logger.warning(f"Detected gaps in historical data: max gap {gaps.max()} seconds")
+        max_gap_threshold = interval_seconds.get(interval, 1) * 2
+        if gaps.max() > max_gap_threshold:
+            logger.warning(f"Detected gaps in historical data: max gap {gaps.max()} seconds for interval {interval}")
+        
+        # Интерполяция и проверка на аномалии
         df = df.interpolate(method="linear")
+        if df[["open", "high", "low", "close", "volume"]].isna().any().any() or \
+           np.any(np.isinf(df[["open", "high", "low", "close", "volume"]].values)) or \
+           (df[["open", "high", "low", "close", "volume"]] < 0).any().any():
+            logger.error("Invalid data detected: NaN, Inf, or negative values found")
+            return
         
         logger.info(f"Fetched {len(df)} historical records for {range_type}, expected: {expected_records}")
         if len(df) < expected_records * 0.8:
@@ -123,20 +133,22 @@ async def fetch_historical_data(range_type="1day", start_time=None, end_time=Non
             df.set_index("timestamp", inplace=True)
             df = df.sort_index()
             df = calculate_indicators(df)
+            if df is None:
+                logger.error("Failed to calculate indicators for historical data")
+                return
             
             df_min = df.resample("1min").agg({
                 "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
             }).interpolate(method="linear")
             df_min = calculate_indicators(df_min)
-            train_model(df_min)
+            if df_min is not None:
+                train_model(df_min)
             
             df_hour = df.resample("1h").agg({
                 "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
             }).interpolate(method="linear")
             df_hour = calculate_indicators(df_hour)
-            if len(df_hour) < config["model"]["min_hourly_candles"]:
-                logger.warning(f"Too few hourly candles: {len(df_hour)}, required: {config['model']['min_hourly_candles']}")
-            else:
+            if df_hour is not None and len(df_hour) >= config["model"]["min_hourly_candles"]:
                 train_hourly_model(df_hour)
             
             logger.info("Initial models trained")
@@ -156,7 +168,6 @@ async def check_network():
         logger.error(f"Network check failed: {e}")
         return False
 
-# Producer: listens to WebSocket and puts raw JSON into queue
 async def producer_ws(uri, name, raw_queue):
     global last_kline_time
     reconnect_delay = 5
@@ -174,7 +185,6 @@ async def producer_ws(uri, name, raw_queue):
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
 
-# Consumer: processes queue into buffer
 async def consumer_loop(raw_queue):
     message_count = 0
     interval_seconds = {"1s": 1, "1m": 60, "3m": 180, "15m": 900, "1h": 3600, "1d": 86400}
@@ -228,7 +238,6 @@ async def consumer_loop(raw_queue):
         except Exception as e:
             logger.error(f"[consumer] Error: {e}")
 
-# Watchdog: monitors if kline data stops arriving
 async def watchdog():
     global last_kline_time
     while True:
@@ -248,7 +257,6 @@ def get_latest_features():
             logger.warning(f"Insufficient data: {len(data_buffer)} records")
             return None
         
-        # Проверяем, обновился ли буфер
         buffer_timestamp = data_buffer[-1]["timestamp"] if data_buffer else 0
         if buffer_timestamp == last_buffer_update and cached_df is not None:
             return cached_df["min"].iloc[-1], cached_df["hour"].iloc[-1], cached_df["min"]
@@ -274,16 +282,25 @@ def get_latest_features():
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df = calculate_indicators(df)
+        if df is None:
+            logger.error("Failed to calculate indicators in get_latest_features")
+            return None
 
         df_min = df.resample("1min").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df_min = calculate_indicators(df_min)
+        if df_min is None:
+            logger.error("Failed to calculate indicators for minutely data")
+            return None
 
         df_hour = df.resample("1h").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df_hour = calculate_indicators(df_hour)
+        if df_hour is None:
+            logger.error("Failed to calculate indicators for hourly data")
+            return None
 
         if len(df_min) < config["model"]["min_candles"] or len(df_hour) < config["model"]["min_hourly_candles"]:
             logger.warning(f"Too few candles: min={len(df_min)}, hour={len(df_hour)}")
@@ -295,7 +312,7 @@ def get_latest_features():
     except Exception as e:
         logger.error(f"Error in get_latest_features: {e}", exc_info=True)
         return None
-  
+
 async def update_errors_loop():
     logger.info("update_errors_loop started")
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
@@ -307,12 +324,10 @@ async def update_errors_loop():
 
     while True:
         try:
-            # Проверка данных в памяти
             if not predictions:
                 await asyncio.sleep(1)
                 continue
 
-            # Загружаем данные из буфера
             with buffer_lock:
                 current_data_buffer = list(data_buffer)
                 if current_data_buffer != last_data_buffer:
@@ -328,7 +343,6 @@ async def update_errors_loop():
 
             updated_count = 0
 
-            # Обход списка предсказаний в памяти
             with prediction_file_lock:
                 for prediction in predictions:
                     for pred_type in ["min", "hour"]:
@@ -337,11 +351,9 @@ async def update_errors_loop():
                         pred_time_col = f"{pred_type}_pred_time"
                         pred_value_col = f"{pred_type}_pred"
 
-                        # Уже посчитано
                         if prediction.get(actual_col) is not None:
                             continue
 
-                        # Время предсказания
                         pred_time = prediction.get(pred_time_col)
                         if pred_time is None:
                             continue
@@ -350,7 +362,6 @@ async def update_errors_loop():
                         if pred_time > now:
                             continue
 
-                        # Находим ближайшее значение
                         time_diff = (data_df["timestamp"] - pred_time).abs()
                         if time_diff.empty or time_diff.isnull().all():
                             continue
@@ -376,14 +387,12 @@ async def update_errors_loop():
 
         await asyncio.sleep(1)
 
-
-
 async def retrain_loop():
     """Периодическое переобучение моделей"""
     global last_train_time_min, last_train_time_hour
     logger.info("retrain_loop started")
-    train_interval = config["data"].get("train_interval", 300)  # По умолчанию 5 минут
-    hourly_train_interval = config["data"].get("hourly_train_interval", 3600)  # По умолчанию 1 час
+    train_interval = config["data"].get("train_interval", 300)
+    hourly_train_interval = config["data"].get("hourly_train_interval", 1200)
 
     while True:
         try:
@@ -400,27 +409,29 @@ async def retrain_loop():
                 df.set_index("timestamp", inplace=True)
                 df = df.sort_index()
                 df = calculate_indicators(df)
+                if df is None:
+                    logger.error("Failed to calculate indicators in retrain_loop")
+                    await asyncio.sleep(train_interval)
+                    continue
 
-                # Минутная модель
                 if current_time - last_train_time_min >= train_interval:
                     df_min = df.resample("1min").agg({
                         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
                     }).interpolate(method="linear").dropna()
                     df_min = calculate_indicators(df_min)
-                    if len(df_min) >= config["model"].get("min_candles", 1):
+                    if df_min is not None and len(df_min) >= config["model"].get("min_candles", 1):
                         train_model(df_min)
                         last_train_time_min = current_time
                         logger.info(f"Minutely model retrained, samples={len(df_min)}")
                     else:
                         logger.warning(f"Too few minute candles for retraining: {len(df_min)}")
 
-                # Часовая модель
                 if current_time - last_train_time_hour >= hourly_train_interval:
                     df_hour = df.resample("1h").agg({
                         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
                     }).interpolate(method="linear").dropna()
                     df_hour = calculate_indicators(df_hour)
-                    if len(df_hour) >= config["model"].get("min_hourly_candles", 1):
+                    if df_hour is not None and len(df_hour) >= config["model"].get("min_hourly_candles", 1):
                         train_hourly_model(df_hour)
                         last_train_time_hour = current_time
                         logger.info(f"Hourly model retrained, samples={len(df_hour)}")
@@ -431,7 +442,6 @@ async def retrain_loop():
         except Exception as e:
             logger.error(f"Error in retrain_loop: {e}", exc_info=True)
             await asyncio.sleep(train_interval)
-
 
 async def prediction_loop():
     logger.info("prediction_loop started")
@@ -445,7 +455,6 @@ async def prediction_loop():
 
     logger.info(f"Starting prediction_loop with interval: {wait_seconds} seconds")
 
-    # Инициализация файла с заголовками, если он не существует
     if not os.path.exists(csv_file_path):
         with prediction_file_lock:
             pd.DataFrame(columns=[
@@ -475,14 +484,12 @@ async def prediction_loop():
                 min_pred_time = pred_timestamp + pd.Timedelta(minutes=1)
                 hour_pred_time = pred_timestamp + pd.Timedelta(hours=1)
 
-                # Вычисляем проценты изменения
                 min_change_pct = ((min_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
                 hour_change_pct = ((hour_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
                 min_change_str = f"{min_change_pct:+.2f}%"
                 hour_change_str = f"{hour_change_pct:+.2f}%"
 
                 if min_prediction is not None and hour_prediction is not None:
-                    # Логируем в predictions.log
                     predictions_logger.info(
                         "",
                         extra={
@@ -515,7 +522,6 @@ async def prediction_loop():
                     if len(predictions) > max_predictions:
                         predictions = predictions[-max_predictions:]
 
-                    # Атомарная запись с повторными попытками
                     retries = 3
                     for attempt in range(retries):
                         try:
@@ -550,7 +556,6 @@ async def start_binance_websocket():
     kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
     trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
 
-    # Добавляем задачу retrain_loop
     tasks = [
         asyncio.create_task(producer_ws(kline_uri, "kline", raw_queue)),
         asyncio.create_task(producer_ws(trade_uri, "aggTrade", raw_queue)),
@@ -558,11 +563,10 @@ async def start_binance_websocket():
         asyncio.create_task(watchdog()),
         asyncio.create_task(prediction_loop()),
         asyncio.create_task(update_errors_loop()),
-        asyncio.create_task(retrain_loop())  # Новая задача для переобучения
+        asyncio.create_task(retrain_loop())
     ]
 
     logger.info("All websocket tasks started")
-    # Ждём все задачи и логируем ошибки, не падая всем циклом
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for idx, res in enumerate(results):
         if isinstance(res, Exception):
