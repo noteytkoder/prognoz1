@@ -12,8 +12,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
-from app.config.manager import load_config, load_environment_config
+import sys
 
+# Добавляем корень проекта (родительскую директорию) в sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from app.config.manager import load_config, load_environment_config
 
 config = load_config()
 env_name = config["app_env"]
