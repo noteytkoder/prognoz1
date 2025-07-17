@@ -1,4 +1,4 @@
-app_env: dev # dev/prod
+app_env: dev
 auth:
   password: qwerty63
   username: admin
@@ -18,14 +18,19 @@ indicators:
   rsi_window: 7
   sma_window: 3
 model:
-  hourly_max_depth: 20
-  hourly_n_estimators: 250
-  hourly_train_window_minutes: 10080
-  max_depth: 0
+  hourly_max_depth: null
+  hourly_n_estimators: 100
+  hourly_train_window_minutes: 1440
+  max_depth: null
+  max_features: sqrt
   min_candles: 1
   min_hourly_candles: 1
-  n_estimators: 250
-  train_window_minutes: 150
+  min_samples_leaf: 1
+  min_samples_split: 2
+  n_estimators: 100
+  retrain_every_n_steps_hour: 60
+  retrain_every_n_steps_min: 1
+  train_window_minutes: 60
 timezone: Europe/Moscow
 visual:
   default_time_range: 1day
