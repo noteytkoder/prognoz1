@@ -143,7 +143,7 @@ def train_hourly_model(df):
         model.fit(X_scaled, y)
         y_pred = model.predict(X_scaled)
         r2 = r2_score(y, y_pred)
-        minute_model = model
+        hourly_model = model
         logger.info(f"Minute model trained, R^2={r2:.4f}, samples={len(X)}")
     except Exception as e:
         logger.error(f"Error training minute model: {e}", exc_info=True)

@@ -17,8 +17,8 @@ indicators:
   sma_window: 
 model:
   max_depth: 15
-  min_candles: 1
-  min_hourly_candles: 1
+  min_candles: 60
+  min_hourly_candles: 24
   n_estimators: 100
   train_window_minutes: 160
 timezone: Europe/Moscow

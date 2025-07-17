@@ -4,7 +4,7 @@ import pytz
 import numpy as np
 
 # Путь к файлу с предсказаниями
-predictions_file = "logs/predictions.csv"
+predictions_file = "logs/smol.csv"
 
 # Чтение данных
 df = pd.read_csv(predictions_file)
