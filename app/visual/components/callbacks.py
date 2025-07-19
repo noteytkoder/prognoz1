@@ -12,7 +12,7 @@ import os
 import sys
 import subprocess
 import platform
-import psutil  # Добавляем psutil
+import psutil
 from pathlib import Path
 from app.logs.logger import setup_logger
 from app.data.handler import buffer_lock
@@ -29,6 +29,8 @@ cached_df = None
 cached_timestamp = None
 cached_pred_df = None
 cached_pred_timestamp = None
+cached_hourly_pred_df = None  # Новый кэш для часовых прогнозов
+cached_hourly_pred_timestamp = None  # Новый кэш для временной метки часовых прогнозов
 
 def prepare_data(data_copy, interval, msk_tz):
     """Подготовка данных: ресэмплинг и фильтрация"""
@@ -55,9 +57,10 @@ def prepare_data(data_copy, interval, msk_tz):
 
 def prepare_predictions(msk_tz, last_time, time_delta):
     """Подготовка данных предсказаний"""
-    global cached_pred_df, cached_pred_timestamp
+    global cached_pred_df, cached_pred_timestamp, cached_hourly_pred_df, cached_hourly_pred_timestamp
     mse_min, mae_min, mse_hour, mae_hour, pred_count = None, None, None, None, 0
     pred_df = pd.DataFrame()
+    hourly_pred_df = pd.DataFrame()
 
     try:
         if os.path.exists("logs/predictions.csv") and os.path.getsize("logs/predictions.csv") > 0:
@@ -65,24 +68,35 @@ def prepare_predictions(msk_tz, last_time, time_delta):
                 pred_df = pd.read_csv("logs/predictions.csv", encoding='utf-8')
             pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
             pred_df["min_pred_time"] = pd.to_datetime(pred_df["min_pred_time"], utc=True).dt.tz_convert(msk_tz)
-            pred_df["hour_pred_time"] = pd.to_datetime(pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
             pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
             if len(pred_df) > 1:
                 min_valid = pred_df[pred_df["min_error"].notna()]
-                hour_valid = pred_df[pred_df["hour_error"].notna()]
                 if not min_valid.empty:
                     mse_min = np.mean(min_valid["min_error"] ** 2)
                     mae_min = np.mean(min_valid["min_error"])
-                if not hour_valid.empty:
-                    mse_hour = np.mean(hour_valid["hour_error"] ** 2)
-                    mae_hour = np.mean(hour_valid["hour_error"])
                 pred_count = len(pred_df)
             cached_pred_df = pred_df
             cached_pred_timestamp = last_time
+
+        if os.path.exists("logs/hourly_predictions.csv") and os.path.getsize("logs/hourly_predictions.csv") > 0:
+            with buffer_lock:
+                hourly_pred_df = pd.read_csv("logs/hourly_predictions.csv", encoding='utf-8')
+            hourly_pred_df["timestamp"] = pd.to_datetime(hourly_pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
+            hourly_pred_df["hour_pred_time"] = pd.to_datetime(hourly_pred_df["hour_pred_time"], utc=True).dt.tz_convert(msk_tz)
+            hourly_pred_df = hourly_pred_df[hourly_pred_df["timestamp"] >= (last_time - time_delta)]
+            if len(hourly_pred_df) > 1:
+                hour_valid = hourly_pred_df[hourly_pred_df["hour_error"].notna()]
+                if not hour_valid.empty:
+                    mse_hour = np.mean(hour_valid["hour_error"] ** 2)
+                    mae_hour = np.mean(hour_valid["hour_error"])
+                pred_count = max(pred_count, len(hourly_pred_df))
+            cached_hourly_pred_df = hourly_pred_df
+            cached_hourly_pred_timestamp = last_time
+
     except Exception as e:
-        logger.error(f"Failed to read logs/predictions.csv: {e}")
-    
-    return pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count
+        logger.error(f"Failed to read predictions.csv or hourly_predictions.csv: {e}")
+
+    return pred_df, hourly_pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count
 
 def create_main_figure(df, show_candles, show_error_band, forecast_range, last_time, features, error_band_width):
     """Создание основного графика"""
@@ -121,12 +135,12 @@ def create_main_figure(df, show_candles, show_error_band, forecast_range, last_t
 
     return fig
 
-def create_prediction_figures(pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count, last_time, time_delta, x_range_pred_min, x_range_pred_hour, y_range):
+def create_prediction_figures(pred_df, hourly_pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count, last_time, time_delta, x_range_pred_min, x_range_pred_hour, y_range):
     """Создание графиков предсказаний"""
     pred_fig_min = go.Figure()
     pred_fig_hour = go.Figure()
     pred_style_min = {"display": "block" if not pred_df.empty else "none"}
-    pred_style_hour = {"display": "block" if not pred_df.empty else "none"}
+    pred_style_hour = {"display": "block" if not hourly_pred_df.empty else "none"}
 
     if not pred_df.empty:
         filtered_pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
@@ -161,15 +175,18 @@ def create_prediction_figures(pred_df, mse_min, mae_min, mse_hour, mae_hour, pre
                 xaxis=dict(tickformat="%Y-%m-%d %H:%M:%S", tickangle=45)
             )
 
+    if not hourly_pred_df.empty:
+        filtered_hourly_pred_df = hourly_pred_df[hourly_pred_df["timestamp"] >= (last_time - time_delta)]
+        if not filtered_hourly_pred_df.empty:
             pred_fig_hour.add_trace(go.Scatter(
-                x=filtered_pred_df["timestamp"], y=filtered_pred_df["actual_price"],
+                x=filtered_hourly_pred_df["timestamp"], y=filtered_hourly_pred_df["actual_price"],
                 mode="lines", name="Фактическая цена", line=dict(color=config["visual"]["real_price_color"])
             ))
             pred_fig_hour.add_trace(go.Scatter(
-                x=filtered_pred_df["hour_pred_time"], y=filtered_pred_df["hour_pred"],
+                x=filtered_hourly_pred_df["hour_pred_time"], y=filtered_hourly_pred_df["hour_pred"],
                 mode="lines", name="Предсказанная цена (1 час)", line=dict(color=config["visual"]["predicted_price_color"])
             ))
-            annotation_text = (f"MSE: {mse_hour:.2f}, MAE: {mae_hour:.2f}, Количество: {pred_count}"
+            annotation_text = (f"MSE: {mse_hour:.2f}, MAE: {mae_hour:.2f}, Количество: {len(filtered_hourly_pred_df)}"
                               if mse_hour is not None and mae_hour is not None
                               else "Ожидание данных для расчета метрик")
             pred_fig_hour.add_annotation(
@@ -199,7 +216,7 @@ def create_prediction_figures(pred_df, mse_min, mae_min, mse_hour, mae_hour, pre
     Input("download-range", "value"),
     Input("websocket-interval-1hour", "value"),
     Input("websocket-interval-1day", "value"),
-    Input("websocket-interval-1month", "value"),
+    Input("websocket-interval-1month", "value")
 )
 def update_interval(download_range, ws_interval_1hour, ws_interval_1day, ws_interval_1month):
     interval_map = {"1s": 1000, "1m": 60000, "15m": 15*60000, "1h": 60*60000}
@@ -330,7 +347,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
         # Подготовка предсказаний
         show_candles = "candles" in (show_candles or [])
         show_band = "show" in (show_error_band or [])
-        pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count = prepare_predictions(msk_tz, last_time, time_delta)
+        pred_df, hourly_pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count = prepare_predictions(msk_tz, last_time, time_delta)
 
         # Вычисление зоны погрешности
         error_band_width = config["visual"]["error_band_min"]
@@ -364,7 +381,7 @@ def update_graph(n, train_period, show_candles, show_error_band, forecast_range,
 
         # Создание графиков предсказаний
         pred_fig_min, pred_fig_hour, pred_style_min, pred_style_hour = create_prediction_figures(
-            pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count, last_time, time_delta, x_range_pred_min, x_range_pred_hour, y_range
+            pred_df, hourly_pred_df, mse_min, mae_min, mse_hour, mae_hour, pred_count, last_time, time_delta, x_range_pred_min, x_range_pred_hour, y_range
         )
 
         logger.debug("Graph updated successfully")
@@ -440,7 +457,7 @@ def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interv
 
         except Exception as e:
             logger.error(f"Error in update_settings: {e}", exc_info=True)
-            raise  # Для отладки, чтобы увидеть ошибку в логах
+            raise
     return n_clicks
 
 @callback(
@@ -469,21 +486,14 @@ def restart_application(n_clicks):
 def update_server_status(n_intervals):
     """Обновление статуса сервера"""
     try:
-        # Получение загрузки CPU
         cpu_usage = psutil.cpu_percent(interval=1)
-        
-        # Получение использования памяти
         memory = psutil.virtual_memory()
         memory_usage = memory.percent
-        
-        # Расчет времени работы приложения
         uptime_seconds = time.time() - APP_START_TIME
         days, remainder = divmod(uptime_seconds, 86400)
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = f"{int(days)}д {int(hours)}ч {int(minutes)}м {int(seconds)}с"
-        
-        # Проверка состояния сервера
         health_status = "ОК"
         if cpu_usage > 90 or memory_usage > 90:
             health_status = "Высокая нагрузка"
@@ -491,16 +501,13 @@ def update_server_status(n_intervals):
         elif cpu_usage > 75 or memory_usage > 75:
             health_status = "Повышенная нагрузка"
             logger.debug(f"Elevated server load: CPU={cpu_usage}%, Memory={memory_usage}%")
-        
         logger.debug(f"Server status updated: CPU={cpu_usage}%, Memory={memory_usage}%, Uptime={uptime_str}, Health={health_status}")
-        
         return (
             f"Загрузка CPU: {cpu_usage:.1f}%",
             f"Использование памяти: {memory_usage:.1f}%",
             f"Время работы сервера: {uptime_str}",
             f"Статус: {health_status}"
         )
-    
     except Exception as e:
         logger.error(f"Error in update_server_status: {e}", exc_info=True)
         return (

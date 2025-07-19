@@ -47,18 +47,15 @@ def serve_predictions_log_text():
             logger.error(f"Predictions log file not found at {log_file_path}")
             return Response("Лог предсказаний отсутствует", status=404, mimetype='text/plain')
 
-        # with open(log_file_path, 'r', encoding='utf-8') as f:
-        #     log_content = f.read()
         log_content = get_file_reversed(log_file_path)
-
 
         return Response(log_content, mimetype='text/plain')
 
     except Exception as e:
         logger.error(f"Error serving predictions.log: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-  
-@dash_app.server.route(env_config[env_name]["csv_endpoiint"], methods=['GET'])
+
+@dash_app.server.route(env_config[env_name]["csv_endpoint"], methods=['GET'])
 def serve_predictions_csv():
     """Возвращает содержимое файла predictions.csv в виде текста"""
     try:
@@ -71,10 +68,7 @@ def serve_predictions_csv():
             logger.error(f"Predictions CSV file not found at {csv_file_path}")
             return Response("Файл предсказаний отсутствует", status=404, mimetype='text/plain')
 
-        # with open(csv_file_path, 'r', encoding='utf-8') as f:
-        #     csv_content = f.read()
         csv_content = get_file_reversed(csv_file_path)
-
 
         return Response(csv_content, mimetype='text/plain')
 
@@ -82,25 +76,39 @@ def serve_predictions_csv():
         logger.error(f"Error serving predictions.csv: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
 
+@dash_app.server.route(env_config[env_name]["hourly_csv_endpoint"], methods=['GET'])
+def serve_hourly_predictions_csv():
+    """Возвращает содержимое файла hourly_predictions.csv в виде текста"""
+    try:
+        csv_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'hourly_predictions.csv')
+        )
+        logger.info(f"Serving hourly predictions CSV file: {csv_file_path}")
 
+        if not os.path.exists(csv_file_path):
+            logger.error(f"Hourly predictions CSV file not found at {csv_file_path}")
+            return Response("Файл часовых предсказаний отсутствует", status=404, mimetype='text/plain')
 
- 
-@dash_app.server.route(env_config[env_name]["logtotal_endpoint"] , methods=['GET'])
+        csv_content = get_file_reversed(csv_file_path)
+
+        return Response(csv_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving hourly_predictions.csv: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@dash_app.server.route(env_config[env_name]["logtotal_endpoint"], methods=['GET'])
 def serve_logtotal():
     try:
         log_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'app.log')
         )
-        # logger.info(f"Serving full log file: {log_file_path}")
 
         if not os.path.exists(log_file_path):
             logger.error(f"Log file not found at {log_file_path}")
             return Response("Лог отсутствует", status=404, mimetype='text/plain')
 
-        # with open(log_file_path, 'r', encoding='utf-8') as f:
-        #     log_content = f.read()
         log_content = get_file_reversed(log_file_path)
-
 
         return Response(log_content, mimetype='text/plain')
 
@@ -110,38 +118,46 @@ def serve_logtotal():
 
 @dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
 def serve_predictions_table():
-    """Возвращает HTML-таблицу с последней записью из predictions.csv"""
+    """Возвращает HTML-таблицу с последними записями из predictions.csv и hourly_predictions.csv"""
     try:
         csv_file_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
         )
-        logger.debug(f"Serving predictions CSV file: {csv_file_path}")
+        hourly_csv_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'hourly_predictions.csv')
+        )
+        logger.debug(f"Serving predictions CSV file: {csv_file_path}, hourly: {hourly_csv_file_path}")
 
-        if not os.path.exists(csv_file_path):
-            logger.error(f"Predictions file not found at {csv_file_path}")
+        if not os.path.exists(csv_file_path) or not os.path.exists(hourly_csv_file_path):
+            logger.error(f"One or both prediction files not found: {csv_file_path}, {hourly_csv_file_path}")
             return Response("Логи отсутствуют", status=404, mimetype='text/plain')
 
         with buffer_lock:
-            if os.path.getsize(csv_file_path) == 0:
-                logger.error(f"Predictions file is empty at {csv_file_path}")
+            if os.path.getsize(csv_file_path) == 0 or os.path.getsize(hourly_csv_file_path) == 0:
+                logger.error(f"One or both prediction files are empty: {csv_file_path}, {hourly_csv_file_path}")
                 return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
 
             pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-            if pred_df.empty:
-                logger.error(f"Predictions file is empty after reading at {csv_file_path}")
+            hourly_pred_df = pd.read_csv(hourly_csv_file_path, encoding='utf-8')
+
+            if pred_df.empty or hourly_pred_df.empty:
+                logger.error(f"One or both prediction files are empty after reading")
                 return Response("Логи отсутствуют", status=404, mimetype='text/plain')
 
         last_pred = pred_df.iloc[-1]
+        last_hourly_pred = hourly_pred_df.iloc[-1]
 
-        # Форматируем значения
+        # Форматируем значения для минутного прогноза
         timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         actual_price = round(float(last_pred['actual_price']), 4)
         min_pred = round(float(last_pred['min_pred']), 4)
-        hour_pred = round(float(last_pred['hour_pred']), 4)
         min_change_str = f"{last_pred['min_change_pct']:+.2f}%"
-        hour_change_str = f"{last_pred['hour_change_pct']:+.2f}%"
         min_pred_time = pd.to_datetime(last_pred['min_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
-        hour_pred_time = pd.to_datetime(last_pred['hour_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Форматируем значения для часового прогноза
+        hour_pred = round(float(last_hourly_pred['hour_pred']), 4)
+        hour_change_str = f"{last_hourly_pred['hour_change_pct']:+.2f}%"
+        hour_pred_time = pd.to_datetime(last_hourly_pred['hour_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
 
         # Формируем строку таблицы
         table_rows = f"""
@@ -165,13 +181,11 @@ def serve_predictions_table():
         return Response(html_content, mimetype='text/html')
 
     except pd.errors.EmptyDataError:
-        logger.error(f"Predictions file is empty or corrupted at {csv_file_path}")
+        logger.error(f"One or both prediction files are empty or corrupted")
         return Response("Логи отсутствуют (файл пуст или поврежден)", status=404, mimetype='text/plain')
     except Exception as e:
-        logger.error(f"Error serving predictions.csv: {e}", exc_info=True)
+        logger.error(f"Error serving predictions: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-
-
 
 def start_dash():
     """Запуск сервера Dash"""

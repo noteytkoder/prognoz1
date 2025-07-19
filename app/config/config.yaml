@@ -18,16 +18,16 @@ indicators:
   rsi_window: 7
   sma_window: 3
 model:
-  hourly_max_depth: null
-  hourly_n_estimators: 100
-  hourly_train_window_minutes: 1440
-  max_depth: null
+  hourly_max_depth: 30
+  hourly_n_estimators: 250
+  hourly_train_window_minutes: 20160
+  max_depth: 20
   max_features: sqrt
   min_candles: 1
   min_hourly_candles: 1
   min_samples_leaf: 1
   min_samples_split: 2
-  n_estimators: 100
+  n_estimators: 250
   retrain_every_n_steps_hour: 60
   retrain_every_n_steps_min: 1
   train_window_minutes: 60

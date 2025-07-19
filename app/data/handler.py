@@ -19,6 +19,7 @@ import numpy as np
 
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
+hourly_prediction_file_lock = Lock()  # Новая блокировка для часового файла
 logger = setup_logger()
 config = load_config()
 
@@ -31,6 +32,7 @@ buffer_lock = threading.Lock()
 
 last_train_time = 0
 predictions = []
+hourly_predictions = []  # Новый список для часовых прогнозов
 last_pred_time = 0
 last_kline_time = 0
 RESTART_FLAG = Path("restart.flag")
@@ -318,13 +320,13 @@ async def update_errors_loop():
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
     tolerance_seconds = {"min": 120, "hour": 600}
 
-    global predictions
+    global predictions, hourly_predictions
     last_data_buffer = None
     data_df = None
 
     while True:
         try:
-            if not predictions:
+            if not (predictions or hourly_predictions):
                 await asyncio.sleep(1)
                 continue
 
@@ -343,9 +345,47 @@ async def update_errors_loop():
 
             updated_count = 0
 
+            # Обновление минутных прогнозов
             with prediction_file_lock:
                 for prediction in predictions:
-                    for pred_type in ["min", "hour"]:
+                    for pred_type in ["min"]:
+                        actual_col = f"{pred_type}_actual_price"
+                        error_col = f"{pred_type}_error"
+                        pred_time_col = f"{pred_type}_pred_time"
+                        pred_value_col = f"{pred_type}_pred"
+
+                        if prediction.get(actual_col) is not None:
+                            continue
+
+                        pred_time = prediction.get(pred_time_col)
+                        if pred_time is None:
+                            continue
+
+                        pred_time = pd.to_datetime(pred_time).tz_convert(msk_tz)
+                        if pred_time > now:
+                            continue
+
+                        time_diff = (data_df["timestamp"] - pred_time).abs()
+                        if time_diff.empty or time_diff.isnull().all():
+                            continue
+
+                        min_diff = time_diff.min()
+                        if pd.isna(min_diff):
+                            continue
+
+                        if min_diff.total_seconds() <= tolerance_seconds[pred_type]:
+                            closest_idx = time_diff.idxmin()
+                            actual_price = data_df.loc[closest_idx, "close"]
+
+                            if prediction.get(actual_col) is None:
+                                prediction[actual_col] = actual_price
+                                prediction[error_col] = abs(actual_price - prediction[pred_value_col])
+                                updated_count += 1
+
+            # Обновление часовых прогнозов
+            with hourly_prediction_file_lock:
+                for prediction in hourly_predictions:
+                    for pred_type in ["hour"]:
                         actual_col = f"{pred_type}_actual_price"
                         error_col = f"{pred_type}_error"
                         pred_time_col = f"{pred_type}_pred_time"
@@ -458,9 +498,8 @@ async def prediction_loop():
     if not os.path.exists(csv_file_path):
         with prediction_file_lock:
             pd.DataFrame(columns=[
-                "timestamp", "actual_price", "min_pred", "hour_pred", "min_error", "hour_error",
-                "min_pred_time", "hour_pred_time", "min_change_pct", "hour_change_pct",
-                "min_actual_price", "hour_actual_price"
+                "timestamp", "actual_price", "min_pred", "min_error",
+                "min_pred_time", "min_change_pct", "min_actual_price"
             ]).to_csv(csv_file_path, index=False)
             logger.info(f"Initialized empty predictions.csv with headers")
 
@@ -471,52 +510,35 @@ async def prediction_loop():
             if result is None:
                 logger.debug("prediction_loop: no features available this cycle")
             else:
-                df_min_row, df_hour_row, df_min_df = result
+                df_min_row, _, df_min_df = result
                 actual_price = df_min_row["close"]
 
                 features = df_min_row[["close", "rsi", "sma", "volume", "log_volume"]]
                 features_df = pd.DataFrame([features])
 
                 min_prediction = predict(features_df)
-                hour_prediction = predict_hourly(features_df)
 
                 pred_timestamp = pd.Timestamp.now(tz=msk_tz)
                 min_pred_time = pred_timestamp + pd.Timedelta(minutes=1)
-                hour_pred_time = pred_timestamp + pd.Timedelta(hours=1)
 
                 min_change_pct = ((min_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
-                hour_change_pct = ((hour_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
                 min_change_str = f"{min_change_pct:+.2f}%"
-                hour_change_str = f"{hour_change_pct:+.2f}%"
 
-                if min_prediction is not None and hour_prediction is not None:
+                if min_prediction is not None:
                     predictions_logger.info(
-                        "",
-                        extra={
-                            "timestamp": str(pred_timestamp),
-                            "actual_price": actual_price,
-                            "min_pred": min_prediction,
-                            "min_pred_time": min_pred_time.strftime('%Y-%m-%d %H:%M:%S%z'),
-                            "min_change": min_change_str,
-                            "hour_pred": hour_prediction,
-                            "hour_pred_time": hour_pred_time.strftime('%Y-%m-%d %H:%M:%S%z'),
-                            "hour_change": hour_change_str,
-                        }
+                        f"время={pred_timestamp}, цена={actual_price:.4f}, "
+                        f"прогноз_на_1мин={min_prediction:.4f}, целевое_время_1мин={min_pred_time.strftime('%Y-%m-%d %H:%M:%S%z')}, "
+                        f"отклонение_1мин={min_change_str}"
                     )
 
                     prediction_record = {
                         "timestamp": pred_timestamp,
                         "actual_price": actual_price,
                         "min_pred": min_prediction,
-                        "hour_pred": hour_prediction,
                         "min_error": None,
-                        "hour_error": None,
                         "min_pred_time": min_pred_time,
-                        "hour_pred_time": hour_pred_time,
                         "min_change_pct": min_change_pct,
-                        "hour_change_pct": hour_change_pct,
-                        "min_actual_price": None,
-                        "hour_actual_price": None
+                        "min_actual_price": None
                     }
                     predictions.append(prediction_record)
                     if len(predictions) > max_predictions:
@@ -548,6 +570,94 @@ async def prediction_loop():
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)
 
+async def hourly_prediction_loop():
+    logger.info("hourly_prediction_loop started")
+    global hourly_predictions
+    max_predictions = 10000
+    csv_file_path = "logs/hourly_predictions.csv"
+    msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
+
+    if not os.path.exists(csv_file_path):
+        with hourly_prediction_file_lock:
+            pd.DataFrame(columns=[
+                "timestamp", "actual_price", "hour_pred", "hour_error",
+                "hour_pred_time", "hour_change_pct", "hour_actual_price"
+            ]).to_csv(csv_file_path, index=False)
+            logger.info(f"Initialized empty hourly_predictions.csv with headers")
+
+    while True:
+        try:
+            now = pd.Timestamp.now(tz=msk_tz)
+            # Вычисляем время до следующего начала часа
+            seconds_to_next_hour = (60 - now.minute) * 60 - now.second
+            if seconds_to_next_hour < 0:
+                seconds_to_next_hour += 3600
+
+            # Ожидаем до начала следующего часа
+            await asyncio.sleep(seconds_to_next_hour)
+
+            result = get_latest_features()
+            if result is None:
+                logger.debug("hourly_prediction_loop: no features available this cycle")
+                continue
+
+            df_min_row, _, df_min_df = result
+            actual_price = df_min_row["close"]
+
+            features = df_min_row[["close", "rsi", "sma", "volume", "log_volume"]]
+            features_df = pd.DataFrame([features])
+
+            hour_prediction = predict_hourly(features_df)
+
+            pred_timestamp = pd.Timestamp.now(tz=msk_tz)
+            hour_pred_time = pred_timestamp + pd.Timedelta(hours=1)
+
+            hour_change_pct = ((hour_prediction - actual_price) / actual_price * 100) if actual_price > 0 else 0
+            hour_change_str = f"{hour_change_pct:+.2f}%"
+
+            if hour_prediction is not None:
+                predictions_logger.info(
+                    f"время={pred_timestamp}, цена={actual_price:.4f}, "
+                    f"прогноз_на_1час={hour_prediction:.4f}, целевое_время_1час={hour_pred_time.strftime('%Y-%m-%d %H:%M:%S%z')}, "
+                    f"отклонение_1час={hour_change_str}"
+                )
+
+                prediction_record = {
+                    "timestamp": pred_timestamp,
+                    "actual_price": actual_price,
+                    "hour_pred": hour_prediction,
+                    "hour_error": None,
+                    "hour_pred_time": hour_pred_time,
+                    "hour_change_pct": hour_change_pct,
+                    "hour_actual_price": None
+                }
+                hourly_predictions.append(prediction_record)
+                if len(hourly_predictions) > max_predictions:
+                    hourly_predictions = hourly_predictions[-max_predictions:]
+
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        with hourly_prediction_file_lock:
+                            tmp_path = csv_file_path + ".tmp"
+                            pd.DataFrame(hourly_predictions).to_csv(tmp_path, index=False, encoding='utf-8')
+                            os.replace(tmp_path, csv_file_path)
+                            logger.debug(f"Hourly predictions saved to {csv_file_path}, size: {os.path.getsize(csv_file_path)} bytes")
+                        break
+                    except PermissionError as e:
+                        logger.warning(f"PermissionError on attempt {attempt+1} in hourly_prediction_loop: {e}")
+                        if attempt < retries - 1:
+                            time.sleep(0.1)
+                        else:
+                            logger.error(f"Failed to save hourly predictions after {retries} attempts: {e}")
+                            raise
+
+        except Exception as e:
+            logger.error(f"Error in hourly_prediction_loop: {e}", exc_info=True)
+
+        # Ждем 1 час до следующего прогноза
+        await asyncio.sleep(3600)
+
 async def start_binance_websocket():
     await check_network()
     raw_queue = asyncio.Queue(maxsize=10000)
@@ -562,6 +672,7 @@ async def start_binance_websocket():
         asyncio.create_task(consumer_loop(raw_queue)),
         asyncio.create_task(watchdog()),
         asyncio.create_task(prediction_loop()),
+        asyncio.create_task(hourly_prediction_loop()),  # Новая задача
         asyncio.create_task(update_errors_loop()),
         asyncio.create_task(retrain_loop())
     ]

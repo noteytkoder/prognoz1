@@ -33,9 +33,7 @@ def setup_predictions_logger():
             backupCount=3
         )
         formatter = logging.Formatter(
-            "время=%(timestamp)s, цена=%(actual_price).4f, "
-            "прогноз_на_1мин=%(min_pred).4f, целевое_время_1мин=%(min_pred_time)s, отклонение_1мин=%(min_change)s, "
-            "прогноз_на_1час=%(hour_pred).4f, целевое_время_1час=%(hour_pred_time)s, отклонение_1час=%(hour_change)s"
+            "%(message)s"  # Используем пустой формат, чтобы передавать кастомные строки
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
