@@ -365,14 +365,21 @@ def simulate_realtime(start_date, end_date, interval="1m", speed=60.0):
                 if df_window_hour is not None and not df_window_hour.empty:
                     train_hourly_model(df_window_hour)
 
-            # Прогноз для минутной модели
             prediction_min = predict(features_df)
             if prediction_min is not None:
+                pred_time_min = current_data["timestamp"] + pd.Timedelta(minutes=1)
+                actual_row_min = df[df["timestamp"] == pred_time_min]
+                if not actual_row_min.empty:
+                    actual_price_min = actual_row_min.iloc[0]["close"]
+                    error_min = abs(actual_price_min - prediction_min)
+                else:
+                    actual_price_min = None
+                    error_min = None
                 new_pred_min = [{
                     "timestamp": current_data["timestamp"],
-                    "actual_price": current_data["close"],
+                    "actual_price": actual_price_min,
                     "predicted_price": prediction_min,
-                    "error": abs(current_data["close"] - prediction_min)
+                    "error": error_min
                 }]
                 with predictions_lock:
                     predictions.append(new_pred_min[0] | {"forecast_range": "1min"})
@@ -384,11 +391,19 @@ def simulate_realtime(start_date, end_date, interval="1m", speed=60.0):
             if current_data["timestamp"].minute == 0:
                 prediction_hour = predict_hourly(features_df)
                 if prediction_hour is not None:
+                    pred_time_hour = current_data["timestamp"] + pd.Timedelta(hours=1)
+                    actual_row_hour = df[df["timestamp"] == pred_time_hour]
+                    if not actual_row_hour.empty:
+                        actual_price_hour = actual_row_hour.iloc[0]["close"]
+                        error_hour = abs(actual_price_hour - prediction_hour)
+                    else:
+                        actual_price_hour = None
+                        error_hour = None
                     new_pred_hour = [{
                         "timestamp": current_data["timestamp"],
-                        "actual_price": current_data["close"],
+                        "actual_price": actual_price_hour,
                         "predicted_price": prediction_hour,
-                        "error": abs(current_data["close"] - prediction_hour)
+                        "error": error_hour
                     }]
                     with predictions_lock:
                         predictions.append(new_pred_hour[0] | {"forecast_range": "1hour"})
