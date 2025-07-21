@@ -40,12 +40,12 @@ CONFIG = {
         "sma_window": 3
     },
     "model": {
-        "n_estimators": 100,
-        "n_estimators_min": 100,
-        "n_estimators_hour": 100,
+        "n_estimators": 250,
+        "n_estimators_min": 250,
+        "n_estimators_hour": 250,
         "max_depth": None,
-        "max_depth_min": None,
-        "max_depth_hour": None,
+        "max_depth_min": 20,
+        "max_depth_hour": 30,
         "min_samples_split": 2,
         "min_samples_leaf": 1,
         "max_features": "sqrt",

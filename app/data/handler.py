@@ -16,6 +16,7 @@ from app.config.manager import load_config
 from threading import Lock
 from pathlib import Path
 import numpy as np
+from datetime import datetime, timedelta
 
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
@@ -570,6 +571,13 @@ async def prediction_loop():
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)
 
+import asyncio
+import os
+import time
+import pandas as pd
+import pytz
+from datetime import datetime, timedelta
+
 async def hourly_prediction_loop():
     logger.info("hourly_prediction_loop started")
     global hourly_predictions
@@ -587,14 +595,12 @@ async def hourly_prediction_loop():
 
     while True:
         try:
-            now = pd.Timestamp.now(tz=msk_tz)
-            # Вычисляем время до следующего начала часа
-            seconds_to_next_hour = (60 - now.minute) * 60 - now.second
-            if seconds_to_next_hour < 0:
-                seconds_to_next_hour += 3600
-
-            # Ожидаем до начала следующего часа
-            await asyncio.sleep(seconds_to_next_hour)
+            # Ждём до начала следующего часа
+            now = datetime.now(tz=msk_tz)
+            next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+            seconds_to_sleep = (next_hour - now).total_seconds()
+            logger.debug(f"Sleeping for {seconds_to_sleep:.2f} seconds until next hour")
+            await asyncio.sleep(seconds_to_sleep)
 
             result = get_latest_features()
             if result is None:
@@ -608,7 +614,6 @@ async def hourly_prediction_loop():
             features_df = pd.DataFrame([features])
 
             hour_prediction = predict_hourly(features_df)
-
             pred_timestamp = pd.Timestamp.now(tz=msk_tz)
             hour_pred_time = pred_timestamp + pd.Timedelta(hours=1)
 
@@ -631,6 +636,7 @@ async def hourly_prediction_loop():
                     "hour_change_pct": hour_change_pct,
                     "hour_actual_price": None
                 }
+
                 hourly_predictions.append(prediction_record)
                 if len(hourly_predictions) > max_predictions:
                     hourly_predictions = hourly_predictions[-max_predictions:]
@@ -654,9 +660,6 @@ async def hourly_prediction_loop():
 
         except Exception as e:
             logger.error(f"Error in hourly_prediction_loop: {e}", exc_info=True)
-
-        # Ждем 1 час до следующего прогноза
-        await asyncio.sleep(3600)
 
 async def start_binance_websocket():
     await check_network()
