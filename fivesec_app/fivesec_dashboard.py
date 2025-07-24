@@ -145,25 +145,29 @@ def prepare_predictions(msk_tz, last_time, time_delta):
     mse_fivesec, mae_fivesec, pred_count = None, None, 0
     pred_df = pd.DataFrame()
 
+    csv_file_path = "logs/fivesec_predictions.csv"
     try:
-        csv_file_path = "logs/fivesec_predictions.csv"
         if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
             with buffer_lock:
                 pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-            pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
-            pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"], utc=True).dt.tz_convert(msk_tz)
-            pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
-            if len(pred_df) > 1:
-                fivesec_valid = pred_df[pred_df["fivesec_error"].notna()]
-                if not fivesec_valid.empty:
-                    mse_fivesec = np.mean(fivesec_valid["fivesec_error"] ** 2)
-                    mae_fivesec = np.mean(fivesec_valid["fivesec_error"])
-                pred_count = len(pred_df)
-            cached_pred_df = pred_df
-            cached_pred_timestamp = last_time
-
+                if pred_df.empty:
+                    logger.debug("prepare_predictions: fivesec_predictions.csv is empty")
+                    return pred_df, mse_fivesec, mae_fivesec, pred_count
+                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"], utc=True).dt.tz_convert(msk_tz)
+                pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
+                if len(pred_df) > 1:
+                    fivesec_valid = pred_df[pred_df["fivesec_error"].notna()]
+                    if not fivesec_valid.empty:
+                        mse_fivesec = np.mean(fivesec_valid["fivesec_error"] ** 2)
+                        mae_fivesec = np.mean(fivesec_valid["fivesec_error"])
+                    pred_count = len(pred_df)
+                cached_pred_df = pred_df
+                cached_pred_timestamp = last_time
+        else:
+            logger.debug(f"prepare_predictions: {csv_file_path} does not exist or is empty")
     except Exception as e:
-        logger.error(f"Failed to read fivesec_predictions.csv: {e}")
+        logger.error(f"Failed to read fivesec_predictions.csv: {e}", exc_info=True)
 
     return pred_df, mse_fivesec, mae_fivesec, pred_count
 
