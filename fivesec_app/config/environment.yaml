@@ -1,0 +1,8 @@
+prod:
+  port_dash: 8052
+  csv_endpoint: /logs/fivesec_predictions.csv
+  predictions_log_endpoint: /logs/fivesec_predictions.log
+dev:
+  port_dash: 8152
+  csv_endpoint: /logs/fivesec_predictions.csv
+  predictions_log_endpoint: /logs/fivesec_predictions.log

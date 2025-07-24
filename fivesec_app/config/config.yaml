@@ -1,0 +1,25 @@
+app_env: dev  # prod или dev
+timezone: Europe/Moscow
+data:
+  buffer_size: 50000
+  download_range: 1hour
+  fivesec_train_interval: 60
+  min_records: 60
+model:
+  fivesec_max_depth: 15
+  fivesec_n_estimators: 100
+  fivesec_train_window_seconds: 3600
+  min_fivesec_candles: 1
+  min_samples_leaf: 1
+  min_samples_split: 2
+visual:
+  update_interval: 1000
+  show_error_band: True
+  error_band_color: rgba(255,165,0,0.2)
+  real_price_color: blue
+  predicted_price_color: orange
+  error_band_multiplier: 1.5
+  error_band_min: 50
+auth:
+  password: qwerty63
+  username: admin
