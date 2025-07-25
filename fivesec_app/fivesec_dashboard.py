@@ -40,8 +40,8 @@ def create_layout():
     return html.Div([
         html.Div(id="main-content", children=create_fivesec_layout()),
         html.Div(id="server-status", children=create_server_status_panel()),
-        dcc.Interval(id="interval-component", interval=config["visual"]["update_interval"], n_intervals=0),
-        dcc.Interval(id="server-status-interval", interval=5000, n_intervals=0),
+        dcc.Interval(id="interval-component", interval=config["visual"]["update_interval"], n_intervals=0, disabled=False),
+        dcc.Interval(id="server-status-interval", interval=5000, n_intervals=0, disabled=False),
         dcc.Store(id="graph-layout", data={}),
         dcc.Store(id="interval-update", data=config["visual"]["update_interval"]),
         dcc.Store(id="pred-fivesec-layout", data={}),
@@ -117,8 +117,6 @@ def create_settings_panel():
         ], style={"display": "flex", "align-items": "center"}),
         html.Button("Применить", id="apply-settings"),
     ])
-
-dash_app.layout = create_layout()
 
 def prepare_data(data_copy, msk_tz):
     """Подготовка данных для графика: использование 1-секундных данных"""
@@ -236,8 +234,8 @@ def create_prediction_figure(pred_df, mse_fivesec, mae_fivesec, pred_count, last
                 mode="lines", name="Предсказанная цена (5 сек)", line=dict(color=config["visual"]["predicted_price_color"])
             ))
             annotation_text = (f"MSE: {mse_fivesec:.2f}, MAE: {mae_fivesec:.2f}, Количество: {pred_count}"
-                              if mse_fivesec is not None and mae_fivesec is not None
-                              else "Ожидание данных для расчета метрик")
+                           if mse_fivesec is not None and mae_fivesec is not None
+                           else "Ожидание данных для расчета метрик")
             pred_fig.add_annotation(
                 xref="paper", yref="paper", x=0.05, y=0.95,
                 text=annotation_text,
@@ -258,6 +256,9 @@ def create_prediction_figure(pred_df, mse_fivesec, mae_fivesec, pred_count, last
             )
 
     return pred_fig, pred_style
+
+# Устанавливаем layout до регистрации коллбэков
+dash_app.layout = create_layout()
 
 @callback(
     Output("main-graph", "figure"),
@@ -281,21 +282,32 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     try:
-        # Обработка relayoutData с учётом временной зоны
+        # Обработка relayoutData без лишних конверсий, так как метки уже в MSK
         if main_relayout_data and "xaxis.range[0]" in main_relayout_data:
             try:
+                start = pd.to_datetime(main_relayout_data["xaxis.range[0]"])
+                end = pd.to_datetime(main_relayout_data["xaxis.range[1]"])
+                # Если метка tz-naive, предполагаем, что она уже в MSK
+                if not start.tzinfo:
+                    start = start.tz_localize(msk_tz)
+                    end = end.tz_localize(msk_tz)
                 main_stored_layout = {
-                    "xaxis.range[0]": pd.to_datetime(main_relayout_data["xaxis.range[0]"]).tz_convert(msk_tz).isoformat(),
-                    "xaxis.range[1]": pd.to_datetime(main_relayout_data["xaxis.range[1]"]).tz_convert(msk_tz).isoformat()
+                    "xaxis.range[0]": start.isoformat(),
+                    "xaxis.range[1]": end.isoformat()
                 }
             except Exception as e:
                 logger.warning(f"Invalid main_relayout_data: {e}")
                 main_stored_layout = {}
         if pred_fivesec_relayout_data and "xaxis.range[0]" in pred_fivesec_relayout_data:
             try:
+                start = pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[0]"])
+                end = pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[1]"])
+                if not start.tzinfo:
+                    start = start.tz_localize(msk_tz)
+                    end = end.tz_localize(msk_tz)
                 pred_fivesec_stored_layout = {
-                    "xaxis.range[0]": pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[0]"]).tz_convert(msk_tz).isoformat(),
-                    "xaxis.range[1]": pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[1]"]).tz_convert(msk_tz).isoformat()
+                    "xaxis.range[0]": start.isoformat(),
+                    "xaxis.range[1]": end.isoformat()
                 }
             except Exception as e:
                 logger.warning(f"Invalid pred_fivesec_relayout_data: {e}")
@@ -324,16 +336,15 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
             default_x_range = [last_time - time_delta, last_time]
             default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
 
-        x_range = ([pd.to_datetime(main_stored_layout["xaxis.range[0]"], utc=True).tz_convert(msk_tz),
-                    pd.to_datetime(main_stored_layout["xaxis.range[1]"], utc=True).tz_convert(msk_tz)]
+        x_range = ([pd.to_datetime(main_stored_layout["xaxis.range[0]"]),
+                    pd.to_datetime(main_stored_layout["xaxis.range[1]"])]
                    if main_stored_layout and "xaxis.range[0]" in main_stored_layout
                    else default_x_range)
-        x_range_pred = ([pd.to_datetime(pred_fivesec_stored_layout["xaxis.range[0]"], utc=True).tz_convert(msk_tz),
-                         pd.to_datetime(pred_fivesec_stored_layout["xaxis.range[1]"], utc=True).tz_convert(msk_tz)]
+        x_range_pred = ([pd.to_datetime(pred_fivesec_stored_layout["xaxis.range[0]"]),
+                         pd.to_datetime(pred_fivesec_stored_layout["xaxis.range[1]"])]
                         if pred_fivesec_stored_layout and "xaxis.range[0]" in pred_fivesec_stored_layout
                         else default_x_range_pred)
 
-        # Избегаем сброса индекса перед передачей в create_main_figure
         current_time = pd.Timestamp.now(tz=msk_tz)
         if (current_time - last_time).total_seconds() > 60:
             fig = go.Figure()
@@ -450,6 +461,16 @@ def restart_application(n_clicks):
 def update_server_status(n_intervals):
     """Обновление статуса сервера"""
     try:
+        # Задержка для предотвращения ранних вызовов
+        if n_intervals == 0:
+            logger.debug("Skipping initial server status update")
+            return (
+                "Загрузка CPU: Ожидание...",
+                "Использование памяти: Ожидание...",
+                "Время работы сервера: Ожидание...",
+                "Статус: Ожидание..."
+            )
+
         cpu_usage = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
         memory_usage = memory.percent
@@ -477,7 +498,7 @@ def update_server_status(n_intervals):
         return (
             "Загрузка CPU: Ошибка",
             "Использование памяти: Ошибка",
-            f"Время работы сервера: Ошибка",
+            "Время работы сервера: Ошибка",
             "Статус: Ошибка"
         )
 
@@ -489,3 +510,6 @@ def start_fivesec_dash():
     except Exception as e:
         logger.error(f"5-second Dash server error: {e}")
         raise
+
+# Явно вызываем layout, чтобы убедиться, что он установлен до запуска
+dash_app.layout = create_layout()
