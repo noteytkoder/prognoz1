@@ -13,6 +13,8 @@ from fivesec_app.data_handler import fivesec_buffer, buffer_lock, calculate_indi
 from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
+from flask import Response
+import os
 
 config = load_config()
 env_name = config["app_env"]
@@ -513,3 +515,64 @@ def start_fivesec_dash():
 
 # Явно вызываем layout, чтобы убедиться, что он установлен до запуска
 dash_app.layout = create_layout()
+
+def get_file_reversed(file_path):
+    """Читает файл и возвращает содержимое в обратном порядке"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        return ''.join(reversed(lines))
+    except Exception as e:
+        logger.error(f"Error reading file {file_path}: {e}")
+        raise
+
+@dash_app.server.route(env_config[env_name]["logtotal_endpoint"], methods=['GET'])
+def serve_logtotal():
+    """Возвращает содержимое fivesec_app.log в обратном порядке"""
+    try:
+        log_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_app.log'))
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Log file not found at {log_file_path}")
+            return Response("Лог отсутствует", status=404, mimetype='text/plain')
+
+        log_content = get_file_reversed(log_file_path)
+        return Response(log_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving logtotal: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@dash_app.server.route(env_config[env_name]["csv_endpoint"], methods=['GET'])
+def serve_predictions_csv():
+    """Возвращает содержимое fivesec_predictions.csv в обратном порядке"""
+    try:
+        csv_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_predictions.csv'))
+
+        if not os.path.exists(csv_file_path):
+            logger.error(f"Predictions CSV file not found at {csv_file_path}")
+            return Response("Файл предсказаний отсутствует", status=404, mimetype='text/plain')
+
+        csv_content = get_file_reversed(csv_file_path)
+        return Response(csv_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving predictions.csv: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@dash_app.server.route(env_config[env_name]["predictions_log_endpoint"], methods=['GET'])
+def serve_predictions_log():
+    """Возвращает содержимое fivesec_predictions.log в обратном порядке"""
+    try:
+        log_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_predictions.log'))
+
+        if not os.path.exists(log_file_path):
+            logger.error(f"Predictions log file not found at {log_file_path}")
+            return Response("Лог предсказаний отсутствует", status=404, mimetype='text/plain')
+
+        log_content = get_file_reversed(log_file_path)
+        return Response(log_content, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"Error serving predictions.log: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
