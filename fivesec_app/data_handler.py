@@ -10,11 +10,11 @@ from collections import deque
 from threading import Lock
 from fivesec_app.logger import setup_logger, setup_predictions_logger
 from fivesec_app.config_manager import load_config
-import os
 from pathlib import Path
+import os
 
 config = load_config()
-logger = setup_logger()
+logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
 fivesec_buffer = deque(maxlen=config["data"]["buffer_size"])
 fivesec_predictions = []
@@ -44,19 +44,24 @@ def compute_rsi(data, periods=7):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def process_fivesec_data(df):
-    """Ресэмплинг данных до 5 секунд и расчет индикаторов"""
+def process_data_for_model(df, interval="5s"):
+    """Ресэмплинг данных до указанного интервала для модели"""
     try:
-        df = df.resample("5s").agg({
+        # Убедимся, что индекс — DatetimeIndex
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df.set_index("timestamp", inplace=True)
+            else:
+                logger.error("No 'timestamp' column found in DataFrame")
+                return None
+        df = df.resample(interval).agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
         }).interpolate(method="linear").dropna()
         df = calculate_indicators(df)
-        if df is None:
-            logger.error("Failed to calculate indicators for 5-second data")
-            return None
         return df
     except Exception as e:
-        logger.error(f"Error processing 5-second data: {e}")
+        logger.error(f"Error processing data for interval {interval}: {e}", exc_info=True)
         return None
 
 async def fetch_fivesec_historical_data():
@@ -138,13 +143,13 @@ async def fetch_fivesec_historical_data():
             df = df.drop_duplicates(subset=["timestamp"])
             df.set_index("timestamp", inplace=True)
             df = df.sort_index()
-            df = process_fivesec_data(df)
+            df = process_data_for_model(df, interval="5s")
             if df is not None:
                 from .model import train_fivesec_model
                 train_fivesec_model(df)
                 logger.info("Initial 5-second model trained")
     except Exception as e:
-        logger.error(f"Error fetching 5-second historical data: {e}")
+        logger.error(f"Error fetching 5-second historical data: {e}", exc_info=True)
 
 async def producer_ws(uri, name, queue):
     """WebSocket-продюсер для Binance"""
@@ -199,34 +204,34 @@ async def consumer_loop(raw_queue):
         except Exception as e:
             logger.error(f"[consumer] Error: {e}")
 
-async def fivesec_prediction_loop():
+async def fivesec_prediction_loop(root_dir):
     """Цикл предсказаний для 5-секундной модели"""
     from .model import predict_fivesec
     logger.info("fivesec_prediction_loop started")
     global fivesec_predictions
-    predictions_logger = setup_predictions_logger()
+    predictions_logger = setup_predictions_logger(log_dir=os.path.join(root_dir, "logs"))
     interval = "1s"
     interval_seconds = {"1s": 1}
     wait_seconds = interval_seconds[interval]
     max_predictions = 10000
-    csv_file_path = "logs/fivesec_predictions.csv"
+    csv_file_path = os.path.join(root_dir, "logs", "fivesec_predictions.csv")
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
-    # Гарантируем создание директории logs
-    os.makedirs("logs", exist_ok=True)
-
-    # Инициализация файла, если он не существует
-    if not os.path.exists(csv_file_path):
-        try:
-            with fivesec_prediction_file_lock:
-                pd.DataFrame(columns=[
-                    "timestamp", "actual_price", "fivesec_pred", "fivesec_error",
-                    "fivesec_pred_time", "fivesec_change_pct", "fivesec_actual_price"
-                ]).to_csv(csv_file_path, index=False, encoding='utf-8')
-                logger.info(f"Initialized empty fivesec_predictions.csv at {csv_file_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize fivesec_predictions.csv: {e}", exc_info=True)
-            return  # Прерываем цикл, если не удалось создать файл
+    # Удаляем существующий файл прогнозов и создаём новый
+    os.makedirs(os.path.join(root_dir, "logs"), exist_ok=True)
+    try:
+        if os.path.exists(csv_file_path):
+            os.remove(csv_file_path)
+            logger.info(f"Removed existing fivesec_predictions.csv at {csv_file_path}")
+        with fivesec_prediction_file_lock:
+            pd.DataFrame(columns=[
+                "timestamp", "actual_price", "fivesec_pred", "fivesec_error",
+                "fivesec_pred_time", "fivesec_change_pct", "fivesec_actual_price"
+            ]).to_csv(csv_file_path, index=False, encoding='utf-8')
+            logger.info(f"Initialized new fivesec_predictions.csv at {csv_file_path}")
+    except Exception as e:
+        logger.error(f"Failed to initialize fivesec_predictions.csv: {e}", exc_info=True)
+        return
 
     while True:
         start = time.time()
@@ -241,7 +246,7 @@ async def fivesec_prediction_loop():
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df.set_index("timestamp", inplace=True)
                 df = df.sort_index()
-                df = process_fivesec_data(df)
+                df = process_data_for_model(df, interval="5s")
                 if df is None or df.empty:
                     logger.debug("fivesec_prediction_loop: failed to process data or empty dataframe")
                     await asyncio.sleep(wait_seconds)
@@ -281,12 +286,10 @@ async def fivesec_prediction_loop():
             if len(fivesec_predictions) > max_predictions:
                 fivesec_predictions = fivesec_predictions[-max_predictions:]
 
-            # Запись в CSV с обработкой исключений
             retries = 3
             for attempt in range(retries):
                 try:
                     with fivesec_prediction_file_lock:
-                        tmp_path = csv_file_path + ".tmp"
                         pd.DataFrame([prediction_record]).to_csv(
                             csv_file_path, mode='a', header=not os.path.exists(csv_file_path), index=False, encoding='utf-8'
                         )
@@ -329,9 +332,9 @@ async def fivesec_retrain_loop():
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df.set_index("timestamp", inplace=True)
                 df = df.sort_index()
-                df = process_fivesec_data(df)
-                if df is None:
-                    logger.error("Failed to calculate indicators in fivesec_retrain_loop")
+                df = process_data_for_model(df, interval="5s")
+                if df is None or df.empty:
+                    logger.error("Failed to process data in fivesec_retrain_loop")
                     await asyncio.sleep(train_interval)
                     continue
 
@@ -348,7 +351,7 @@ async def fivesec_retrain_loop():
             logger.error(f"Error in fivesec_retrain_loop: {e}", exc_info=True)
             await asyncio.sleep(train_interval)
 
-async def update_fivesec_errors_loop():
+async def update_fivesec_errors_loop(root_dir):
     """Обновление ошибок для 5-секундных прогнозов"""
     logger.info("update_fivesec_errors_loop started")
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
@@ -356,6 +359,7 @@ async def update_fivesec_errors_loop():
     global fivesec_predictions
     last_data_buffer = None
     data_df = None
+    csv_file_path = os.path.join(root_dir, "logs", "fivesec_predictions.csv")
 
     while True:
         try:
@@ -413,6 +417,16 @@ async def update_fivesec_errors_loop():
                                 prediction[error_col] = abs(actual_price - prediction[pred_value_col])
                                 updated_count += 1
 
+                # Сохраняем обновлённые прогнозы в CSV
+                if updated_count > 0:
+                    try:
+                        pd.DataFrame(fivesec_predictions).to_csv(
+                            csv_file_path, index=False, encoding='utf-8'
+                        )
+                        logger.debug(f"Updated {updated_count} predictions in {csv_file_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to save updated predictions to {csv_file_path}: {e}", exc_info=True)
+
             if updated_count > 0:
                 logger.debug(f"update_fivesec_errors_loop: updated {updated_count} predictions in memory")
 
@@ -421,7 +435,7 @@ async def update_fivesec_errors_loop():
 
         await asyncio.sleep(1)
 
-async def start_binance_websocket():
+async def start_binance_websocket(root_dir):
     """Запуск WebSocket и всех циклов"""
     raw_queue = asyncio.Queue(maxsize=10000)
     fivesec_kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_1s"
@@ -429,9 +443,9 @@ async def start_binance_websocket():
     tasks = [
         asyncio.create_task(producer_ws(fivesec_kline_uri, "fivesec_kline", raw_queue)),
         asyncio.create_task(consumer_loop(raw_queue)),
-        asyncio.create_task(fivesec_prediction_loop()),
+        asyncio.create_task(fivesec_prediction_loop(root_dir)),
         asyncio.create_task(fivesec_retrain_loop()),
-        asyncio.create_task(update_fivesec_errors_loop()),
+        asyncio.create_task(update_fivesec_errors_loop(root_dir)),
     ]
 
     logger.info("All websocket tasks started")
@@ -440,5 +454,5 @@ async def start_binance_websocket():
         if isinstance(res, Exception):
             logger.error(f"Task {idx} raised: {res}", exc_info=True)
     logger.error("start_binance_websocket exited, creating restart flag")
-    Path("restart.flag").touch()
+    Path(os.path.join(root_dir, "fivesec_restart.flag")).touch()
     os._exit(0)

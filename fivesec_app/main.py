@@ -9,15 +9,15 @@ from fivesec_app.fivesec_dashboard import start_fivesec_dash
 from fivesec_app.logger import setup_logger
 from fivesec_app.config_manager import load_config, load_environment_config
 
-# Установить текущую рабочую директорию в папку fivesec_app
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+# Установить корневую директорию проекта
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Корень проекта
+os.chdir(os.path.dirname(os.path.abspath(__file__)))  # Текущая директория fivesec_app
 
 config = load_config()
 env_config = load_environment_config()
-logger = setup_logger()
-RESTART_FLAG = Path("restart.flag")
+logger = setup_logger(log_dir=os.path.join(ROOT_DIR, "logs"))
+RESTART_FLAG = Path(os.path.join(ROOT_DIR, "fivesec_restart.flag"))
 
-# Остальной код без изменений
 def signal_handler(sig, frame):
     """Обработчик сигналов завершения"""
     logger.info(f"Received signal {sig}, shutting down")
@@ -28,7 +28,7 @@ def run_websocket():
     """Запуск WebSocket в отдельном потоке"""
     try:
         logger.info("Starting WebSocket")
-        asyncio.run(start_binance_websocket())
+        asyncio.run(start_binance_websocket(ROOT_DIR))
     except Exception as e:
         logger.error(f"WebSocket thread error: {e}", exc_info=True)
         RESTART_FLAG.touch()

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytz
 from dash_auth import BasicAuth
 import secrets
-from fivesec_app.data_handler import fivesec_buffer, buffer_lock, process_fivesec_data
+from fivesec_app.data_handler import fivesec_buffer, buffer_lock, calculate_indicators, process_data_for_model
 from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
@@ -17,8 +17,9 @@ from fivesec_app.logger import setup_logger
 config = load_config()
 env_name = config["app_env"]
 env_config = load_environment_config()
-logger = setup_logger()
-RESTART_FLAG = Path("restart.flag")
+logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RESTART_FLAG = Path(os.path.join(ROOT_DIR, "fivesec_restart.flag"))
 APP_START_TIME = time.time()
 cached_df = None
 cached_timestamp = None
@@ -120,7 +121,7 @@ def create_settings_panel():
 dash_app.layout = create_layout()
 
 def prepare_data(data_copy, msk_tz):
-    """Подготовка данных: ресэмплинг до 5 секунд"""
+    """Подготовка данных для графика: использование 1-секундных данных"""
     global cached_df, cached_timestamp
     latest_timestamp = data_copy[-1]["timestamp"] if data_copy else None
 
@@ -132,9 +133,14 @@ def prepare_data(data_copy, msk_tz):
         df["timestamp"] = pd.to_datetime(df["timestamp"])
     df.set_index("timestamp", inplace=True)
     if df.empty:
+        logger.warning("prepare_data: empty dataframe")
         return None, latest_timestamp
 
-    df = process_fivesec_data(df)
+    df = calculate_indicators(df)
+    if df is None:
+        logger.error("prepare_data: failed to calculate indicators")
+        return None, latest_timestamp
+
     cached_df = df
     cached_timestamp = latest_timestamp
     return df, latest_timestamp
@@ -145,7 +151,7 @@ def prepare_predictions(msk_tz, last_time, time_delta):
     mse_fivesec, mae_fivesec, pred_count = None, None, 0
     pred_df = pd.DataFrame()
 
-    csv_file_path = "logs/fivesec_predictions.csv"
+    csv_file_path = os.path.join(ROOT_DIR, "logs", "fivesec_predictions.csv")
     try:
         if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
             with buffer_lock:
@@ -153,8 +159,8 @@ def prepare_predictions(msk_tz, last_time, time_delta):
                 if pred_df.empty:
                     logger.debug("prepare_predictions: fivesec_predictions.csv is empty")
                     return pred_df, mse_fivesec, mae_fivesec, pred_count
-                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"], utc=True).dt.tz_convert(msk_tz)
-                pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"], utc=True).dt.tz_convert(msk_tz)
+                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"]).dt.tz_convert(msk_tz)
+                pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"]).dt.tz_convert(msk_tz)
                 pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
                 if len(pred_df) > 1:
                     fivesec_valid = pred_df[pred_df["fivesec_error"].notna()]
@@ -172,38 +178,44 @@ def prepare_predictions(msk_tz, last_time, time_delta):
     return pred_df, mse_fivesec, mae_fivesec, pred_count
 
 def create_main_figure(df, show_candles, show_error_band, last_time, error_band_width):
-    """Создание основного графика"""
+    """Создание основного графика с 1-секундными данными"""
+    if not isinstance(df.index, pd.DatetimeIndex):
+        logger.error("create_main_figure: DataFrame does not have DatetimeIndex")
+        return go.Figure()
+
     fig = go.Figure()
     if show_candles:
         fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"],
+            x=df.index, open=df["open"], high=df["high"],
             low=df["low"], close=df["close"],
             name="Свечи", increasing_line_color="green", decreasing_line_color="red"
         ))
     else:
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["close"], mode="lines", name="Цена закрытия",
+            x=df.index, y=df["close"], mode="lines", name="Цена закрытия",
             line=dict(color="blue")
         ))
 
-    features = df.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
-    features_df = pd.DataFrame([features])
-    prediction = predict_fivesec(features_df)
-    pred_time = last_time + pd.Timedelta(seconds=5)
-    if prediction is not None:
-        fig.add_trace(go.Scatter(
-            x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
-            mode="lines", name="Прогноз (5 сек)",
-            line=dict(color=config["visual"]["predicted_price_color"])
-        ))
-        if show_error_band:
+    df_5s = process_data_for_model(df.copy(), interval="5s")
+    if df_5s is not None and not df_5s.empty:
+        features = df_5s.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
+        features_df = pd.DataFrame([features])
+        prediction = predict_fivesec(features_df)
+        pred_time = last_time + pd.Timedelta(seconds=5)
+        if prediction is not None:
             fig.add_trace(go.Scatter(
-                x=[last_time, pred_time, pred_time, last_time],
-                y=[df["close"].iloc[-1], prediction + error_band_width, prediction - error_band_width, df["close"].iloc[-1]],
-                fill="toself", fillcolor=config["visual"]["error_band_color"],
-                line=dict(color="rgba(255,255,255,0)"),
-                name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
+                x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
+                mode="lines", name="Прогноз (5 сек)",
+                line=dict(color=config["visual"]["predicted_price_color"])
             ))
+            if show_error_band:
+                fig.add_trace(go.Scatter(
+                    x=[last_time, pred_time, pred_time, last_time],
+                    y=[df["close"].iloc[-1], prediction + error_band_width, prediction - error_band_width, df["close"].iloc[-1]],
+                    fill="toself", fillcolor=config["visual"]["error_band_color"],
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
+                ))
 
     return fig
 
@@ -269,10 +281,25 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     try:
+        # Обработка relayoutData с учётом временной зоны
         if main_relayout_data and "xaxis.range[0]" in main_relayout_data:
-            main_stored_layout = main_relayout_data
+            try:
+                main_stored_layout = {
+                    "xaxis.range[0]": pd.to_datetime(main_relayout_data["xaxis.range[0]"]).tz_convert(msk_tz).isoformat(),
+                    "xaxis.range[1]": pd.to_datetime(main_relayout_data["xaxis.range[1]"]).tz_convert(msk_tz).isoformat()
+                }
+            except Exception as e:
+                logger.warning(f"Invalid main_relayout_data: {e}")
+                main_stored_layout = {}
         if pred_fivesec_relayout_data and "xaxis.range[0]" in pred_fivesec_relayout_data:
-            pred_fivesec_stored_layout = pred_fivesec_relayout_data
+            try:
+                pred_fivesec_stored_layout = {
+                    "xaxis.range[0]": pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[0]"]).tz_convert(msk_tz).isoformat(),
+                    "xaxis.range[1]": pd.to_datetime(pred_fivesec_relayout_data["xaxis.range[1]"]).tz_convert(msk_tz).isoformat()
+                }
+            except Exception as e:
+                logger.warning(f"Invalid pred_fivesec_relayout_data: {e}")
+                pred_fivesec_stored_layout = {}
 
         with buffer_lock:
             if not fivesec_buffer:
@@ -306,8 +333,7 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
                         if pred_fivesec_stored_layout and "xaxis.range[0]" in pred_fivesec_stored_layout
                         else default_x_range_pred)
 
-        df = df.loc[x_range[0]:x_range[1]].reset_index()
-
+        # Избегаем сброса индекса перед передачей в create_main_figure
         current_time = pd.Timestamp.now(tz=msk_tz)
         if (current_time - last_time).total_seconds() > 60:
             fig = go.Figure()
@@ -367,8 +393,8 @@ def download_data(n_clicks):
     if n_clicks:
         with buffer_lock:
             df = pd.DataFrame(fivesec_buffer)
-        os.makedirs("data/downloads", exist_ok=True)
-        df.to_csv(f"data/downloads/fivesec_{int(time.time())}.csv", index=False)
+        os.makedirs(os.path.join(ROOT_DIR, "data", "downloads"), exist_ok=True)
+        df.to_csv(os.path.join(ROOT_DIR, "data", "downloads", f"fivesec_{int(time.time())}.csv"), index=False)
         logger.info("5-second data downloaded")
     return n_clicks
 
