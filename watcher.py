@@ -11,7 +11,7 @@ def run():
             RESTART_FLAG.unlink()
 
         print("start main.py")
-        process = subprocess.Popen(["python3", "main.py"])
+        process = subprocess.Popen(["python", "main.py"])
         process.wait()
 
         if RESTART_FLAG.exists():

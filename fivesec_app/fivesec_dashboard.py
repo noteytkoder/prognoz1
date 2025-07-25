@@ -61,6 +61,7 @@ def create_fivesec_layout():
                     dcc.Dropdown(id="autoscale-range", options=[
                         {"label": "10 минут", "value": "10min"},
                         {"label": "1 час", "value": "1hour"},
+                        {"label": "Не ограниченно", "value": "unlimited"},
                     ], value="10min"),
                     html.Button("Скачать данные", id="download-btn"),
                     html.Button("Перезапустить приложение", id="restart-btn", n_clicks=0),
@@ -93,27 +94,22 @@ def create_settings_panel():
         html.Div([
             html.Label("Размер буфера:"),
             dcc.Input(id="buffer-size", type="number", value=config["data"]["buffer_size"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Максимальное количество записей в буфере данных (например, 50000)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Интервал переобучения (сек):"),
             dcc.Input(id="fivesec-train-interval", type="number", value=config["data"]["fivesec_train_interval"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Интервал в секундах между переобучением модели (например, 60)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Максимальная глубина модели:"),
             dcc.Input(id="fivesec-max-depth", type="number", value=config["model"]["fivesec_max_depth"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Максимальная глубина деревьев в случайном лесу (0 = без ограничений)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Количество деревьев:"),
             dcc.Input(id="fivesec-n_estimators", type="number", value=config["model"]["fivesec_n_estimators"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Число деревьев в случайном лесу (рекомендуется 50-200)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Div([
             html.Label("Период обучения (сек):"),
             dcc.Input(id="fivesec-train-window-seconds", type="number", value=config["model"]["fivesec_train_window_seconds"], style={"width": "100px", "margin": "10px"}),
-            html.Span("?", className="tooltip", title="Количество секунд данных для обучения модели (например, 3600)."),
         ], style={"display": "flex", "align-items": "center"}),
         html.Button("Применить", id="apply-settings"),
     ])
@@ -324,15 +320,19 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
             return go.Figure(), go.Figure(), {"display": "none"}, main_stored_layout, pred_fivesec_stored_layout
 
         last_time = df.index.max()
+        first_time = df.index.min()
         ranges = {"1hour": pd.Timedelta(hours=1)}
-        default_time_delta = ranges.get("1hour")
 
         if autoscale_range == "10min":
             time_delta = pd.Timedelta(minutes=10)
             default_x_range = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
             default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
+        elif autoscale_range == "unlimited":
+            time_delta = last_time - first_time
+            default_x_range = [first_time, last_time + pd.Timedelta(seconds=5)]
+            default_x_range_pred = [first_time, last_time + pd.Timedelta(seconds=5)]
         else:
-            time_delta = default_time_delta
+            time_delta = ranges.get("1hour")
             default_x_range = [last_time - time_delta, last_time]
             default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
 

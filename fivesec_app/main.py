@@ -8,6 +8,7 @@ from fivesec_app.data_handler import start_binance_websocket, fetch_fivesec_hist
 from fivesec_app.fivesec_dashboard import start_fivesec_dash
 from fivesec_app.logger import setup_logger
 from fivesec_app.config_manager import load_config, load_environment_config
+from pathlib import Path
 
 # Установить корневую директорию проекта
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Корень проекта
