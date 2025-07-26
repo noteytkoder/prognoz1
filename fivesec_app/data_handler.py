@@ -16,7 +16,7 @@ import os
 config = load_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
-fivesec_buffer = deque(maxlen=config["data"]["buffer_size"])
+fivesec_buffer = deque(maxlen=30000)  # Уменьшен размер буфера до 30,000
 fivesec_predictions = []
 fivesec_prediction_file_lock = Lock()
 last_fivesec_train_time = time.time()
@@ -45,7 +45,7 @@ def compute_rsi(data, periods=7):
     return 100 - (100 / (1 + rs))
 
 def process_data_for_model(df, interval="5s"):
-    """Ресэмплинг данных до указанного интервала для модели"""
+    """Ресэмплинг данных до 5-секундного интервала для модели"""
     try:
         # Убедимся, что индекс — DatetimeIndex
         if not isinstance(df.index, pd.DatetimeIndex):
@@ -57,7 +57,7 @@ def process_data_for_model(df, interval="5s"):
                 return None
         df = df.resample(interval).agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-        }).interpolate(method="linear").dropna()
+        }).interpolate(method="linear").ffill().dropna()
         df = calculate_indicators(df)
         return df
     except Exception as e:
@@ -210,8 +210,8 @@ async def fivesec_prediction_loop(root_dir):
     logger.info("fivesec_prediction_loop started")
     global fivesec_predictions
     predictions_logger = setup_predictions_logger(log_dir=os.path.join(root_dir, "logs"))
-    interval = "1s"
-    interval_seconds = {"1s": 1}
+    interval = "5s"  # Изменено на 5 секунд
+    interval_seconds = {"5s": 5}
     wait_seconds = interval_seconds[interval]
     max_predictions = 10000
     csv_file_path = os.path.join(root_dir, "logs", "fivesec_predictions.csv")

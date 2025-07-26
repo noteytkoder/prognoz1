@@ -117,7 +117,7 @@ def create_settings_panel():
     ])
 
 def prepare_data(data_copy, msk_tz):
-    """Подготовка данных для графика: использование 1-секундных данных"""
+    """Подготовка данных для графика: использование 5-секундных данных"""
     global cached_df, cached_timestamp
     latest_timestamp = data_copy[-1]["timestamp"] if data_copy else None
 
@@ -132,9 +132,9 @@ def prepare_data(data_copy, msk_tz):
         logger.warning("prepare_data: empty dataframe")
         return None, latest_timestamp
 
-    df = calculate_indicators(df)
+    df = process_data_for_model(df, interval="5s")
     if df is None:
-        logger.error("prepare_data: failed to calculate indicators")
+        logger.error("prepare_data: failed to process 5-second data")
         return None, latest_timestamp
 
     cached_df = df
@@ -174,7 +174,7 @@ def prepare_predictions(msk_tz, last_time, time_delta):
     return pred_df, mse_fivesec, mae_fivesec, pred_count
 
 def create_main_figure(df, show_candles, show_error_band, last_time, error_band_width):
-    """Создание основного графика с 1-секундными данными"""
+    """Создание основного графика с 5-секундными данными"""
     if not isinstance(df.index, pd.DatetimeIndex):
         logger.error("create_main_figure: DataFrame does not have DatetimeIndex")
         return go.Figure()
@@ -192,26 +192,25 @@ def create_main_figure(df, show_candles, show_error_band, last_time, error_band_
             line=dict(color="blue")
         ))
 
-    df_5s = process_data_for_model(df.copy(), interval="5s")
-    if df_5s is not None and not df_5s.empty:
-        features = df_5s.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
-        features_df = pd.DataFrame([features])
-        prediction = predict_fivesec(features_df)
-        pred_time = last_time + pd.Timedelta(seconds=5)
-        if prediction is not None:
+    # Прогноз на основе последней строки 5-секундных данных
+    features = df.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
+    features_df = pd.DataFrame([features])
+    prediction = predict_fivesec(features_df)
+    pred_time = last_time + pd.Timedelta(seconds=5)
+    if prediction is not None:
+        fig.add_trace(go.Scatter(
+            x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
+            mode="lines", name="Прогноз (5 сек)",
+            line=dict(color=config["visual"]["predicted_price_color"])
+        ))
+        if show_error_band:
             fig.add_trace(go.Scatter(
-                x=[last_time, pred_time], y=[df["close"].iloc[-1], prediction],
-                mode="lines", name="Прогноз (5 сек)",
-                line=dict(color=config["visual"]["predicted_price_color"])
+                x=[last_time, pred_time, pred_time, last_time],
+                y=[df["close"].iloc[-1], prediction + error_band_width, prediction - error_band_width, df["close"].iloc[-1]],
+                fill="toself", fillcolor=config["visual"]["error_band_color"],
+                line=dict(color="rgba(255,255,255,0)"),
+                name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
             ))
-            if show_error_band:
-                fig.add_trace(go.Scatter(
-                    x=[last_time, pred_time, pred_time, last_time],
-                    y=[df["close"].iloc[-1], prediction + error_band_width, prediction - error_band_width, df["close"].iloc[-1]],
-                    fill="toself", fillcolor=config["visual"]["error_band_color"],
-                    line=dict(color="rgba(255,255,255,0)"),
-                    name=f"Зона погрешности (±{error_band_width:.2f} USDT)"
-                ))
 
     return fig
 
