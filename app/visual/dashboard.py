@@ -118,74 +118,82 @@ def serve_logtotal():
 
 @dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
 def serve_predictions_table():
-    """Возвращает HTML-таблицу с последними записями из predictions.csv и hourly_predictions.csv"""
     try:
-        csv_file_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'predictions.csv')
-        )
-        hourly_csv_file_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'hourly_predictions.csv')
-        )
-        logger.debug(f"Serving predictions CSV file: {csv_file_path}, hourly: {hourly_csv_file_path}")
+        def load_last_row(file_path, name):
+            if not os.path.exists(file_path):
+                logger.warning(f"{name} файл не найден: {file_path}")
+                return None
+            if os.path.getsize(file_path) == 0:
+                logger.warning(f"{name} файл пуст: {file_path}")
+                return None
 
-        if not os.path.exists(csv_file_path) or not os.path.exists(hourly_csv_file_path):
-            logger.error(f"One or both prediction files not found: {csv_file_path}, {hourly_csv_file_path}")
-            return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+            df = pd.read_csv(file_path, encoding='utf-8')
+            if df.empty:
+                logger.warning(f"{name} файл пуст после чтения: {file_path}")
+                return None
+            return df.iloc[-1]
+
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'logs'))
+        pred_path = os.path.join(base_path, 'predictions.csv')
+        hourly_path = os.path.join(base_path, 'hourly_predictions.csv')
+        fivesec_path = os.path.join(base_path, 'fivesec_predictions.csv')
 
         with buffer_lock:
-            if os.path.getsize(csv_file_path) == 0 or os.path.getsize(hourly_csv_file_path) == 0:
-                logger.error(f"One or both prediction files are empty: {csv_file_path}, {hourly_csv_file_path}")
-                return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
+            last_pred = load_last_row(pred_path, "Minute")
+            last_hourly = load_last_row(hourly_path, "Hourly")
+            last_fivesec = load_last_row(fivesec_path, "FiveSec")
 
-            pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-            hourly_pred_df = pd.read_csv(hourly_csv_file_path, encoding='utf-8')
+            if last_pred is None or last_fivesec is None:
+                return Response("Недостаточно данных для отображения логов", status=404, mimetype='text/plain')
 
-            if pred_df.empty or hourly_pred_df.empty:
-                logger.error(f"One or both prediction files are empty after reading")
-                return Response("Логи отсутствуют", status=404, mimetype='text/plain')
-
-        last_pred = pred_df.iloc[-1]
-        last_hourly_pred = hourly_pred_df.iloc[-1]
-
-        # Форматируем значения для минутного прогноза
+        # --- Минутный прогноз ---
         timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         actual_price = round(float(last_pred['actual_price']), 4)
         min_pred = round(float(last_pred['min_pred']), 4)
-        min_change_str = f"{last_pred['min_change_pct']:+.2f}%"
-        min_pred_time = pd.to_datetime(last_pred['min_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+        min_change = f"{last_pred['min_change_pct']:+.2f}%"
+        min_time = pd.to_datetime(last_pred['min_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Форматируем значения для часового прогноза
-        hour_pred = round(float(last_hourly_pred['hour_pred']), 4)
-        hour_change_str = f"{last_hourly_pred['hour_change_pct']:+.2f}%"
-        hour_pred_time = pd.to_datetime(last_hourly_pred['hour_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+        # --- Пятисекундный прогноз ---
+        five_pred = round(float(last_fivesec['fivesec_pred']), 4)
+        five_change = f"{float(last_fivesec['fivesec_change_pct']):+0.4f}%"
+        five_time = pd.to_datetime(last_fivesec['fivesec_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Формируем строку таблицы
+        # --- Часовой прогноз (с заглушкой) ---
+        if last_hourly is not None:
+            hour_pred = round(float(last_hourly['hour_pred']), 4)
+            hour_change = f"{last_hourly['hour_change_pct']:+.2f}%"
+            hour_time = pd.to_datetime(last_hourly['hour_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            hour_pred = 0
+            hour_change = 0
+            hour_time = 0
+
+        # --- HTML строка ---
         table_rows = f"""
             <tr>
                 <td>{timestamp}</td>
                 <td>{actual_price:.4f}</td>
-                <td>{min_pred:.4f} ({min_change_str}) <br><small>{min_pred_time}</small></td>
-                <td>{hour_pred:.4f} ({hour_change_str}) <br><small>{hour_pred_time}</small></td>
+                <td>{five_pred:.4f} ({five_change}) <br><small>{five_time}</small></td>
+                <td>{min_pred:.4f} ({min_change}) <br><small>{min_time}</small></td>
+                <td>{hour_pred:.4f} ({hour_change}) <br><small>{hour_time}</small></td>
             </tr>
         """
 
-        # Загрузка шаблона
-        TEMPLATE_PATH = os.path.join(
-            os.path.dirname(__file__), '..', '..', 'app', 'templates', 'logs_template.html'
-        )
-        with open(TEMPLATE_PATH, encoding='utf-8') as f:
+        template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'app', 'templates', 'logs_template.html')
+        with open(template_path, encoding='utf-8') as f:
             template = f.read()
 
         html_content = template.replace('{{TABLE_ROWS}}', table_rows)
-
         return Response(html_content, mimetype='text/html')
 
     except pd.errors.EmptyDataError:
-        logger.error(f"One or both prediction files are empty or corrupted")
-        return Response("Логи отсутствуют (файл пуст или поврежден)", status=404, mimetype='text/plain')
+        logger.error("Один из CSV-файлов пуст или повреждён")
+        return Response("Файл логов пуст или повреждён", status=404, mimetype='text/plain')
     except Exception as e:
-        logger.error(f"Error serving predictions: {e}", exc_info=True)
+        logger.exception("Ошибка при формировании таблицы логов")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+
 
 def start_dash():
     """Запуск сервера Dash"""

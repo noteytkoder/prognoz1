@@ -4,7 +4,7 @@ auth:
   username: admin
 data:
   buffer_size: 50000
-  download_range: 1month
+  download_range: 1day
   hourly_train_interval: 60
   min_records: 60
   simulation_train_period: 3600
