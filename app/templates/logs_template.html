@@ -17,9 +17,8 @@
       <tr>
         <th>Время (цена)</th>
         <th>Цена</th>
-        <th>Прогноз 5 сек (%)</th>
-        <th>Прогноз 1 мин (%)</th>
-        <th>Прогноз 1 час (%)</th>
+        <th>Прогноз мин (%)</th>
+        <th>Прогноз час (%)</th>
       </tr>
     </thead>
 
@@ -50,7 +49,7 @@
         }
         clearInterval(refreshTimer);
         refreshTimer = setInterval(reloadLogs, newIntervalSec * 1000);
-        document.getElementById('current-interval').innerText = `Текущий интервал обновления: ${newIntervalSec} секунд`;
+        document.getElementById('current-interval').innerText = Текущий интервал обновления: ${newIntervalSec} секунд;
       });
       reloadLogs();
     });
