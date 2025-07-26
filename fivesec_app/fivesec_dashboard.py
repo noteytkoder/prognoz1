@@ -21,6 +21,7 @@ env_name = config["app_env"]
 env_config = load_environment_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+print(ROOT_DIR)
 RESTART_FLAG = Path(os.path.join(ROOT_DIR, "fivesec_restart.flag"))
 APP_START_TIME = time.time()
 cached_df = None
@@ -33,7 +34,7 @@ DASH_AUTH_CREDENTIALS = {
 }
 
 SECRET_KEY = secrets.token_hex(16)
-dash_app = Dash(__name__, assets_folder="static")
+dash_app = Dash(__name__, assets_folder="../static")
 dash_app.server.secret_key = SECRET_KEY
 BasicAuth(dash_app, DASH_AUTH_CREDENTIALS)
 
@@ -574,4 +575,74 @@ def serve_predictions_log():
 
     except Exception as e:
         logger.error(f"Error serving predictions.log: {e}")
+        return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+    
+@dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
+def serve_fivesec_predictions_table():
+    """Возвращает HTML-таблицу с последней записью из fivesec_predictions.csv"""
+    try:
+        csv_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'logs', 'fivesec_predictions.csv')
+        )
+        logger.debug(f"Serving fivesec predictions CSV file: {csv_file_path}")
+
+        if not os.path.exists(csv_file_path):
+            logger.error(f"File not found: {csv_file_path}")
+            return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
+        with buffer_lock:
+            if os.path.getsize(csv_file_path) == 0:
+                logger.error(f"File is empty: {csv_file_path}")
+                return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
+
+            pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
+
+            if pred_df.empty:
+                logger.error(f"File is empty after reading: {csv_file_path}")
+                return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
+        last_pred = pred_df.iloc[-1]
+
+        # Форматируем данные так же как в основном шаблоне
+        timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+        actual_price = round(float(last_pred['actual_price']), 4)
+
+        fivesec_pred = round(float(last_pred['fivesec_pred']), 4)
+        fivesec_change_str = f"{last_pred['fivesec_change_pct']:+.4f}"
+        fivesec_pred_time = pd.to_datetime(last_pred['fivesec_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Обработка ошибки, если nan — заменяем на пустую строку или дефис
+        error_val = last_pred.get('fivesec_error', None)
+        try:
+            error_float = float(error_val)
+            if pd.isna(error_float):
+                fivesec_error_str = ""
+            else:
+                fivesec_error_str = f"{error_float:.4f}"
+        except (ValueError, TypeError):
+            fivesec_error_str = ""
+
+        # Формируем строку таблицы, время прогноза под значением прогноза, в одном столбце
+        table_rows = f"""
+            <tr>
+                <td>{timestamp}<br></td>
+                <td>{actual_price:.4f}</td>
+                <td>{fivesec_pred:.4f} ({fivesec_change_str})<br><small>{fivesec_pred_time}</small></td>
+            </tr>
+        """
+
+        # Шаблон берём тот же, но с соответствующей шапкой таблицы:
+        TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), 'logs_fivesec_template.html')
+        with open(TEMPLATE_PATH, encoding='utf-8') as f:
+            template = f.read()
+
+        html_content = template.replace('{{TABLE_ROWS}}', table_rows)
+
+        return Response(html_content, mimetype='text/html')
+
+    except pd.errors.EmptyDataError:
+        logger.error(f"File empty or corrupted: {csv_file_path}")
+        return Response("Логи отсутствуют (файл пуст или поврежден)", status=404, mimetype='text/plain')
+    except Exception as e:
+        logger.error(f"Error serving fivesec predictions: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
