@@ -25,7 +25,12 @@ def train_fivesec_model(df):
             logger.warning(f"Insufficient data for 5-sec training: {len(df)} candles, required: {config['model']['min_fivesec_candles']}")
             return
         
-        features = ["close", "rsi", "sma", "volume", "log_volume"]
+        features = [
+            "close", "rsi", "sma", "volume", "log_volume",
+            "close_lag_1", "close_lag_2", "close_lag_3",
+            "rsi_lag_1", "rsi_lag_2", "rsi_lag_3",
+            "sma_lag_1", "sma_lag_2", "sma_lag_3"
+        ]
         target = df["close"].shift(-1)
         valid_idx = target.notna()
         X = df[features][valid_idx]
@@ -80,9 +85,19 @@ def predict_fivesec(features):
         if fivesec_model is None or fivesec_scaler is None:
             logger.warning("5-second model or scaler not initialized")
             return None
+        expected_features = [
+            "close", "rsi", "sma", "volume", "log_volume",
+            "close_lag_1", "close_lag_2", "close_lag_3",
+            "rsi_lag_1", "rsi_lag_2", "rsi_lag_3",
+            "sma_lag_1", "sma_lag_2", "sma_lag_3"
+        ]
+        if not all(col in features.columns for col in expected_features):
+            logger.error(f"Missing features in prediction input: {features.columns.tolist()}")
+            return None
         if features.isna().any().any() or np.any(np.isinf(features.values)):
             logger.error("NaN or Inf values in prediction features")
             return None
+        features = features[expected_features]  # Ensure correct feature order
         features_scaled = fivesec_scaler.transform(features)
         return fivesec_model.predict(features_scaled)[0]
     except Exception as e:

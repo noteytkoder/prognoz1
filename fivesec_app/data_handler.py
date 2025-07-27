@@ -16,7 +16,7 @@ import os
 config = load_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
-fivesec_buffer = deque(maxlen=30000)  # Уменьшен размер буфера до 30,000
+fivesec_buffer = deque(maxlen=10000)  # Уменьшен размер буфера до 30,000
 fivesec_predictions = []
 fivesec_prediction_file_lock = Lock()
 last_fivesec_train_time = time.time()
@@ -26,11 +26,16 @@ def process_timestamp(ms_timestamp):
     return pd.to_datetime(ms_timestamp, unit="ms", utc=True).tz_convert(config.get("timezone", "Europe/Moscow"))
 
 def calculate_indicators(df):
-    """Расчет индикаторов RSI, SMA, log_volume"""
+    """Расчет индикаторов RSI, SMA, log_volume и лагов"""
     try:
         df["rsi"] = compute_rsi(df["close"], config["model"].get("rsi_window", 7))
         df["sma"] = df["close"].rolling(window=config["model"].get("sma_window", 3)).mean()
         df["log_volume"] = np.log1p(df["volume"])
+        # Добавляем лаги для close, rsi, sma
+        for lag in range(1, 4):  # Лаги 1, 2, 3
+            df[f"close_lag_{lag}"] = df["close"].shift(lag)
+            df[f"rsi_lag_{lag}"] = df["rsi"].shift(lag)
+            df[f"sma_lag_{lag}"] = df["sma"].shift(lag)
         return df.dropna()
     except Exception as e:
         logger.error(f"Error calculating indicators: {e}")
@@ -47,7 +52,6 @@ def compute_rsi(data, periods=7):
 def process_data_for_model(df, interval="5s"):
     """Ресэмплинг данных до 5-секундного интервала для модели"""
     try:
-        # Убедимся, что индекс — DatetimeIndex
         if not isinstance(df.index, pd.DatetimeIndex):
             if "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -210,14 +214,13 @@ async def fivesec_prediction_loop(root_dir):
     logger.info("fivesec_prediction_loop started")
     global fivesec_predictions
     predictions_logger = setup_predictions_logger(log_dir=os.path.join(root_dir, "logs"))
-    interval = "5s"  # Изменено на 5 секунд
+    interval = "5s"
     interval_seconds = {"5s": 5}
     wait_seconds = interval_seconds[interval]
     max_predictions = 10000
     csv_file_path = os.path.join(root_dir, "logs", "fivesec_predictions.csv")
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
-    # Удаляем существующий файл прогнозов и создаём новый
     os.makedirs(os.path.join(root_dir, "logs"), exist_ok=True)
     try:
         if os.path.exists(csv_file_path):
@@ -253,7 +256,10 @@ async def fivesec_prediction_loop(root_dir):
                     continue
                 latest_row = df.iloc[-1]
                 actual_price = latest_row["close"]
-                features = latest_row[["close", "rsi", "sma", "volume", "log_volume"]]
+                features = latest_row[["close", "rsi", "sma", "volume", "log_volume",
+                                      "close_lag_1", "close_lag_2", "close_lag_3",
+                                      "rsi_lag_1", "rsi_lag_2", "rsi_lag_3",
+                                      "sma_lag_1", "sma_lag_2", "sma_lag_3"]]
                 features_df = pd.DataFrame([features])
 
             fivesec_prediction = predict_fivesec(features_df)
@@ -417,7 +423,6 @@ async def update_fivesec_errors_loop(root_dir):
                                 prediction[error_col] = abs(actual_price - prediction[pred_value_col])
                                 updated_count += 1
 
-                # Сохраняем обновлённые прогнозы в CSV
                 if updated_count > 0:
                     try:
                         pd.DataFrame(fivesec_predictions).to_csv(
