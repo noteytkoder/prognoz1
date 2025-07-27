@@ -21,7 +21,6 @@ env_name = config["app_env"]
 env_config = load_environment_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-print(ROOT_DIR)
 RESTART_FLAG = Path(os.path.join(ROOT_DIR, "fivesec_restart.flag"))
 APP_START_TIME = time.time()
 cached_df = None
@@ -62,6 +61,7 @@ def create_fivesec_layout():
                                   value=["show"] if config["visual"]["show_error_band"] else []),
                     html.Label("Диапазон автоскейлинга:"),
                     dcc.Dropdown(id="autoscale-range", options=[
+                        {"label": "1 минута", "value": "1min"},
                         {"label": "10 минут", "value": "10min"},
                         {"label": "1 час", "value": "1hour"},
                         {"label": "Не ограниченно", "value": "unlimited"},
@@ -285,7 +285,6 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
             try:
                 start = pd.to_datetime(main_relayout_data["xaxis.range[0]"])
                 end = pd.to_datetime(main_relayout_data["xaxis.range[1]"])
-                # Если метка tz-naive, предполагаем, что она уже в MSK
                 if not start.tzinfo:
                     start = start.tz_localize(msk_tz)
                     end = end.tz_localize(msk_tz)
@@ -323,9 +322,13 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
 
         last_time = df.index.max()
         first_time = df.index.min()
-        ranges = {"1hour": pd.Timedelta(hours=1)}
+        ranges = {"1hour": pd.Timedelta(hours=1), "1min": pd.Timedelta(minutes=1)}
 
-        if autoscale_range == "10min":
+        if autoscale_range == "1min":
+            time_delta = pd.Timedelta(minutes=1)
+            default_x_range = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
+            default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
+        elif autoscale_range == "10min":
             time_delta = pd.Timedelta(minutes=10)
             default_x_range = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
             default_x_range_pred = [last_time - time_delta, last_time + pd.Timedelta(seconds=5)]
@@ -463,7 +466,6 @@ def restart_application(n_clicks):
 def update_server_status(n_intervals):
     """Обновление статуса сервера"""
     try:
-        # Задержка для предотвращения ранних вызовов
         if n_intervals == 0:
             logger.debug("Skipping initial server status update")
             return (
@@ -531,14 +533,11 @@ def serve_logtotal():
     """Возвращает содержимое fivesec_app.log в обратном порядке"""
     try:
         log_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_app.log'))
-
         if not os.path.exists(log_file_path):
             logger.error(f"Log file not found at {log_file_path}")
             return Response("Лог отсутствует", status=404, mimetype='text/plain')
-
         log_content = get_file_reversed(log_file_path)
         return Response(log_content, mimetype='text/plain')
-
     except Exception as e:
         logger.error(f"Error serving logtotal: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
@@ -548,14 +547,11 @@ def serve_predictions_csv():
     """Возвращает содержимое fivesec_predictions.csv в обратном порядке"""
     try:
         csv_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_predictions.csv'))
-
         if not os.path.exists(csv_file_path):
             logger.error(f"Predictions CSV file not found at {csv_file_path}")
             return Response("Файл предсказаний отсутствует", status=404, mimetype='text/plain')
-
         csv_content = get_file_reversed(csv_file_path)
         return Response(csv_content, mimetype='text/plain')
-
     except Exception as e:
         logger.error(f"Error serving predictions.csv: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
@@ -565,18 +561,15 @@ def serve_predictions_log():
     """Возвращает содержимое fivesec_predictions.log в обратном порядке"""
     try:
         log_file_path = os.path.abspath(os.path.join(ROOT_DIR, 'logs', 'fivesec_predictions.log'))
-
         if not os.path.exists(log_file_path):
             logger.error(f"Predictions log file not found at {log_file_path}")
             return Response("Лог предсказаний отсутствует", status=404, mimetype='text/plain')
-
         log_content = get_file_reversed(log_file_path)
         return Response(log_content, mimetype='text/plain')
-
     except Exception as e:
         logger.error(f"Error serving predictions.log: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
-    
+
 @dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
 def serve_fivesec_predictions_table():
     """Возвращает HTML-таблицу с последней записью из fivesec_predictions.csv"""
