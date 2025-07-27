@@ -194,7 +194,12 @@ def create_main_figure(df, show_candles, show_error_band, last_time, error_band_
         ))
 
     # Прогноз на основе последней строки 5-секундных данных
-    features = df.iloc[-1][["close", "rsi", "sma", "volume", "log_volume"]]
+    features = df.iloc[-1][[
+        "close", "rsi", "sma", "volume", "log_volume",
+        "close_lag_1", "close_lag_2", "close_lag_3",
+        "rsi_lag_1", "rsi_lag_2", "rsi_lag_3",
+        "sma_lag_1", "sma_lag_2", "sma_lag_3"
+    ]]
     features_df = pd.DataFrame([features])
     prediction = predict_fivesec(features_df)
     pred_time = last_time + pd.Timedelta(seconds=5)
@@ -596,15 +601,12 @@ def serve_fivesec_predictions_table():
 
         last_pred = pred_df.iloc[-1]
 
-        # Форматируем данные так же как в основном шаблоне
         timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         actual_price = round(float(last_pred['actual_price']), 4)
-
         fivesec_pred = round(float(last_pred['fivesec_pred']), 4)
         fivesec_change_str = f"{last_pred['fivesec_change_pct']:+.4f}"
         fivesec_pred_time = pd.to_datetime(last_pred['fivesec_pred_time']).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Обработка ошибки, если nan — заменяем на пустую строку или дефис
         error_val = last_pred.get('fivesec_error', None)
         try:
             error_float = float(error_val)
@@ -615,7 +617,6 @@ def serve_fivesec_predictions_table():
         except (ValueError, TypeError):
             fivesec_error_str = ""
 
-        # Формируем строку таблицы, время прогноза под значением прогноза, в одном столбце
         table_rows = f"""
             <tr>
                 <td>{timestamp}<br></td>
@@ -624,7 +625,6 @@ def serve_fivesec_predictions_table():
             </tr>
         """
 
-        # Шаблон берём тот же, но с соответствующей шапкой таблицы:
         TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), 'logs_fivesec_template.html')
         with open(TEMPLATE_PATH, encoding='utf-8') as f:
             template = f.read()
@@ -639,3 +639,4 @@ def serve_fivesec_predictions_table():
     except Exception as e:
         logger.error(f"Error serving fivesec predictions: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+    
