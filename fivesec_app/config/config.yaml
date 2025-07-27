@@ -3,13 +3,13 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 50000
+  buffer_size: 10000
   download_range: 1hour
   fivesec_train_interval: 60
   min_records: 60
 model:
-  fivesec_max_depth: 15
-  fivesec_n_estimators: 150
+  fivesec_max_depth: 25
+  fivesec_n_estimators: 250
   fivesec_train_window_seconds: 7200
   min_fivesec_candles: 1
   min_samples_leaf: 1

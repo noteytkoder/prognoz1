@@ -16,7 +16,7 @@ import os
 config = load_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
-fivesec_buffer = deque(maxlen=10000)  # Уменьшен размер буфера до 30,000
+fivesec_buffer = deque(maxlen=config["data"]["buffer_size"])  # Уменьшен размер буфера до 30,000
 fivesec_predictions = []
 fivesec_prediction_file_lock = Lock()
 last_fivesec_train_time = time.time()
