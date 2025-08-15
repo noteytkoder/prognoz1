@@ -1,4 +1,4 @@
-app_env: dev
+app_env: dev2
 auth:
   password: qwerty63
   username: admin

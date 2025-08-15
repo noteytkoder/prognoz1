@@ -12,14 +12,19 @@ from fivesec_app.logger import setup_logger, setup_predictions_logger
 from fivesec_app.config_manager import load_config
 from pathlib import Path
 import os
+from collections import deque
+from .model import train_fivesec_model
 
 config = load_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
 fivesec_buffer = deque(maxlen=config["data"]["buffer_size"])  # Уменьшен размер буфера до 30,000
-fivesec_predictions = []
+fivesec_predictions = deque(maxlen=config["data"]["buffer_size"])  # Лимит на 1000 последних предсказаний
 fivesec_prediction_file_lock = Lock()
 last_fivesec_train_time = time.time()
+# В начале файла добавьте:
+cached_processed_df = None
+last_buffer_hash = None  # Для проверки изменений
 
 def process_timestamp(ms_timestamp):
     """Преобразование миллисекундного таймстемпа в datetime"""
@@ -149,7 +154,6 @@ async def fetch_fivesec_historical_data():
             df = df.sort_index()
             df = process_data_for_model(df, interval="5s")
             if df is not None:
-                from .model import train_fivesec_model
                 train_fivesec_model(df)
                 logger.info("Initial 5-second model trained")
     except Exception as e:
@@ -318,12 +322,11 @@ async def fivesec_prediction_loop(root_dir):
         sleep_time = max(0, wait_seconds - elapsed)
         await asyncio.sleep(sleep_time)
 
+
 async def fivesec_retrain_loop():
-    """Периодическое переобучение 5-секундной модели"""
-    from .model import train_fivesec_model
-    global last_fivesec_train_time
-    logger.info("fivesec_retrain_loop started")
-    train_interval = config["data"].get("fivesec_train_interval", 60)
+    """Цикл переобучения 5-секундной модели"""
+    global last_fivesec_train_time, cached_processed_df, last_buffer_hash
+    train_interval = config["data"]["fivesec_train_interval"]
 
     while True:
         try:
@@ -338,25 +341,37 @@ async def fivesec_retrain_loop():
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df.set_index("timestamp", inplace=True)
                 df = df.sort_index()
-                df = process_data_for_model(df, interval="5s")
-                if df is None or df.empty:
-                    logger.error("Failed to process data in fivesec_retrain_loop")
-                    await asyncio.sleep(train_interval)
-                    continue
 
-                if current_time - last_fivesec_train_time >= train_interval:
-                    if len(df) >= config["model"].get("min_fivesec_candles", 1):
+                # Хэш для проверки изменений (простой: len + last timestamp)
+                current_hash = (len(df), df.index[-1] if not df.empty else None)
+                if current_hash == last_buffer_hash:
+                    df = cached_processed_df  # Используем кэш
+                else:
+                    df = process_data_for_model(df, interval="5s")
+                    if df is None or df.empty:
+                        logger.error("Failed to process data in fivesec_retrain_loop")
+                        await asyncio.sleep(train_interval)
+                        continue
+                    cached_processed_df = df
+                    last_buffer_hash = current_hash
+
+            if current_time - last_fivesec_train_time >= train_interval:
+                if len(df) >= config["model"].get("min_fivesec_candles", 1):
+                    # Дополнительная проверка на NaN/Inf перед train
+                    if df.isna().any().any() or np.any(np.isinf(df.values)):
+                        logger.warning("NaN/Inf in processed df, skipping retrain")
+                    else:
                         train_fivesec_model(df)
                         last_fivesec_train_time = current_time
                         logger.info(f"5-second model retrained, samples={len(df)}")
-                    else:
-                        logger.warning(f"Too few 5-sec candles for retraining: {len(df)}")
+                else:
+                    logger.warning(f"Too few 5-sec candles for retraining: {len(df)}")
 
             await asyncio.sleep(train_interval)
         except Exception as e:
             logger.error(f"Error in fivesec_retrain_loop: {e}", exc_info=True)
             await asyncio.sleep(train_interval)
-
+            
 async def update_fivesec_errors_loop(root_dir):
     """Обновление ошибок для 5-секундных прогнозов"""
     logger.info("update_fivesec_errors_loop started")
@@ -370,25 +385,27 @@ async def update_fivesec_errors_loop(root_dir):
     while True:
         try:
             if not fivesec_predictions:
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)  # Увеличили sleep до 5 сек
                 continue
 
             with buffer_lock:
                 current_data_buffer = list(fivesec_buffer)
                 if current_data_buffer != last_data_buffer:
                     data_df = pd.DataFrame(current_data_buffer)
+                    data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
+                    data_df = data_df.sort_values("timestamp")  # Сортируем для searchsorted
                     last_data_buffer = current_data_buffer
 
             if data_df is None or data_df.empty:
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
                 continue
 
-            data_df["timestamp"] = pd.to_datetime(data_df["timestamp"])
             now = pd.Timestamp.now(tz=msk_tz)
             updated_count = 0
+            pending_predictions = [p for p in fivesec_predictions if p.get("fivesec_actual_price") is None]  # Только свежие
 
             with fivesec_prediction_file_lock:
-                for prediction in fivesec_predictions:
+                for prediction in pending_predictions:
                     for pred_type in ["fivesec"]:
                         actual_col = f"{pred_type}_actual_price"
                         error_col = f"{pred_type}_error"
@@ -406,26 +423,28 @@ async def update_fivesec_errors_loop(root_dir):
                         if pred_time > now:
                             continue
 
-                        time_diff = (data_df["timestamp"] - pred_time).abs()
-                        if time_diff.empty or time_diff.isnull().all():
-                            continue
+                        # Оптимизированный поиск closest: используем searchsorted
+                        idx = data_df["timestamp"].searchsorted(pred_time)
+                        if idx == 0 or idx == len(data_df):
+                            continue  # Нет подходящих
 
+                        # Ближайшие: idx-1 и idx
+                        candidates = data_df.iloc[max(0, idx-1):idx+1]
+                        time_diff = (candidates["timestamp"] - pred_time).abs()
                         min_diff = time_diff.min()
-                        if pd.isna(min_diff):
+                        if pd.isna(min_diff) or min_diff.total_seconds() > tolerance_seconds[pred_type]:
                             continue
 
-                        if min_diff.total_seconds() <= tolerance_seconds[pred_type]:
-                            closest_idx = time_diff.idxmin()
-                            actual_price = data_df.loc[closest_idx, "close"]
+                        closest_idx = time_diff.idxmin()
+                        actual_price = data_df.loc[closest_idx, "close"]
 
-                            if prediction.get(actual_col) is None:
-                                prediction[actual_col] = actual_price
-                                prediction[error_col] = abs(actual_price - prediction[pred_value_col])
-                                updated_count += 1
+                        prediction[actual_col] = actual_price
+                        prediction[error_col] = abs(actual_price - prediction[pred_value_col])
+                        updated_count += 1
 
                 if updated_count > 0:
                     try:
-                        pd.DataFrame(fivesec_predictions).to_csv(
+                        pd.DataFrame(list(fivesec_predictions)).to_csv(  # deque to list
                             csv_file_path, index=False, encoding='utf-8'
                         )
                         logger.debug(f"Updated {updated_count} predictions in {csv_file_path}")
@@ -434,11 +453,12 @@ async def update_fivesec_errors_loop(root_dir):
 
             if updated_count > 0:
                 logger.debug(f"update_fivesec_errors_loop: updated {updated_count} predictions in memory")
+            logger.debug(f"Predictions deque size: {len(fivesec_predictions)}")  # Мониторинг размера
 
         except Exception as e:
             logger.error(f"Error in update_fivesec_errors_loop: {e}", exc_info=True)
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)  # Увеличили sleep
 
 async def start_binance_websocket(root_dir):
     """Запуск WebSocket и всех циклов"""

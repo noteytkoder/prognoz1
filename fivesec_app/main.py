@@ -48,7 +48,11 @@ def run_fivesec_dash():
 def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
+    
+    if RESTART_FLAG.exists():
+        RESTART_FLAG.unlink()
+        logger.info("Restart flag deleted on startup")
+        
     logger.info("Starting 5-second application")
 
     # Загрузка исторических данных
