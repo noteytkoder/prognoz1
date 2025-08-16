@@ -10,7 +10,6 @@
 <body class="log-page">
   <div class="container">
     <h1>Логи 5-секундных прогнозов BTC/USDT</h1>
-
     <div class="table-wrapper">
       <table class="log-table">
         <thead>
@@ -18,16 +17,15 @@
             <th>Время</th>
             <th>Цена</th>
             <th>Прогноз 5 сек (%)</th>
-         </tr>
+            <th>MAE (10 мин)</th>
+          </tr>
         </thead>
-
         <tbody id="logs">
           {{TABLE_ROWS}}
         </tbody>
       </table>
     </div>
   </div>
-
   <script>
     let refreshTimer = setInterval(function(){
       $.get('/logs/fivesec_predictions', function(data) {
