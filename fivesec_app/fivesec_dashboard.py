@@ -9,7 +9,7 @@ from pathlib import Path
 import pytz
 from dash_auth import BasicAuth
 import secrets
-from fivesec_app.data_handler import fivesec_buffer, buffer_lock, calculate_indicators, process_data_for_model
+from fivesec_app.data_handler import fivesec_buffer, buffer_lock, fivesec_prediction_file_lock, calculate_indicators, process_data_for_model
 from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
@@ -588,7 +588,7 @@ def serve_fivesec_predictions_table():
             logger.error(f"File not found: {csv_file_path}")
             return Response("Логи отсутствуют", status=404, mimetype='text/plain')
 
-        with buffer_lock:
+        with fivesec_prediction_file_lock:
             if os.path.getsize(csv_file_path) == 0:
                 logger.error(f"File is empty: {csv_file_path}")
                 return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
