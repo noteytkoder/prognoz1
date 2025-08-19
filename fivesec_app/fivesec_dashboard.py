@@ -9,13 +9,11 @@ from pathlib import Path
 import pytz
 from dash_auth import BasicAuth
 import secrets
-from fivesec_app.data_handler import fivesec_buffer, buffer_lock, fivesec_prediction_file_lock, calculate_indicators, process_data_for_model
+from fivesec_app.data_handler import fivesec_buffer, buffer_lock, fivesec_prediction_file_lock, fivesec_predictions, calculate_indicators, process_data_for_model
 from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
 from flask import Response
-import os
-# Добавляем глобальную переменную в начало файла (где определены cached_df, cached_timestamp и т.д.)
 
 cached_mae_10min = None
 config = load_config()
@@ -116,6 +114,10 @@ def create_settings_panel():
             html.Label("Период обучения (сек):"),
             dcc.Input(id="fivesec-train-window-seconds", type="number", value=config["model"]["fivesec_train_window_seconds"], style={"width": "100px", "margin": "10px"}),
         ], style={"display": "flex", "align-items": "center"}),
+        html.Div([
+            html.Label("Интервал записи в CSV (сек):"),
+            dcc.Input(id="csv-write-interval", type="number", value=config["data"]["csv_write_interval"], style={"width": "100px", "margin": "10px"}),
+        ], style={"display": "flex", "align-items": "center"}),
         html.Button("Применить", id="apply-settings"),
     ])
 
@@ -144,69 +146,50 @@ def prepare_data(data_copy, msk_tz):
     cached_timestamp = latest_timestamp
     return df, latest_timestamp
 
-# Модифицируем функцию prepare_predictions для расчета MAE(10 мин)
 def prepare_predictions(msk_tz, last_time, time_delta):
-    """Подготовка данных предсказаний"""
+    """Подготовка данных предсказаний из памяти"""
     global cached_pred_df, cached_pred_timestamp, cached_mae_10min
     mse_fivesec, mae_fivesec, pred_count = None, None, 0
-    pred_df = pd.DataFrame()
 
-    csv_file_path = os.path.join(ROOT_DIR, "logs", "fivesec_predictions.csv")
-    try:
-        if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
-            with fivesec_prediction_file_lock:  # Используем правильный лок для файла
-                try:
-                    pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-                except pd.errors.EmptyDataError:
-                    logger.warning(f"EmptyDataError in fivesec_predictions.csv: File is empty or corrupted")
-                    cached_mae_10min = None
-                    return pred_df, mse_fivesec, mae_fivesec, pred_count, cached_mae_10min
-
-                if pred_df.empty:
-                    logger.debug("prepare_predictions: fivesec_predictions.csv is empty")
-                    cached_mae_10min = None
-                    return pred_df, mse_fivesec, mae_fivesec, pred_count, cached_mae_10min
-
-                pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"]).dt.tz_convert(msk_tz)
-                pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"]).dt.tz_convert(msk_tz)
-                pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
-
-                if len(pred_df) > 1:
-                    fivesec_valid = pred_df[pred_df["fivesec_error"].notna()]
-                    if not fivesec_valid.empty:
-                        mse_fivesec = np.mean(fivesec_valid["fivesec_error"] ** 2)
-                        mae_fivesec = np.mean(fivesec_valid["fivesec_error"])
-                    pred_count = len(pred_df)
-
-                # Расчет MAE(10 мин)
-                window_start = last_time - pd.Timedelta(minutes=10)
-                window_df = pred_df[pred_df["timestamp"] >= window_start]
-                if not window_df.empty and 'fivesec_error' in window_df:
-                    valid = window_df['fivesec_error'].dropna()
-                    if len(valid) >= 5:  # Требуем минимум 5 точек
-                        cached_mae_10min = np.mean(np.abs(valid))
-                        logger.debug(f"MAE(10min)={cached_mae_10min:.4f}, Count={len(window_df)}")
-                    else:
-                        cached_mae_10min = None
-                        logger.debug("Insufficient valid data for MAE(10min)")
-                else:
-                    cached_mae_10min = None
-                    logger.debug("No data in 10min window for MAE calculation")
-
-                cached_pred_df = pred_df
-                cached_pred_timestamp = last_time
-        else:
-            logger.debug(f"prepare_predictions: {csv_file_path} does not exist or is empty")
+    with fivesec_prediction_file_lock:
+        if not fivesec_predictions:
+            logger.debug("prepare_predictions: fivesec_predictions deque is empty")
             cached_mae_10min = None
-    except Exception as e:
-        logger.error(f"Failed to read fivesec_predictions.csv: {e}", exc_info=True)
-        cached_mae_10min = None
-        # Возвращаем кэшированные данные, если они есть
-        if cached_pred_df is not None and cached_pred_timestamp == last_time:
-            logger.debug("Using cached pred_df due to file read error")
-            pred_df = cached_pred_df
+            return pd.DataFrame(), mse_fivesec, mae_fivesec, pred_count, cached_mae_10min
+
+        pred_df = pd.DataFrame(list(fivesec_predictions))
+        if pred_df.empty:
+            logger.debug("prepare_predictions: converted DataFrame is empty")
+            cached_mae_10min = None
+            return pred_df, mse_fivesec, mae_fivesec, pred_count, cached_mae_10min
+
+        pred_df["timestamp"] = pd.to_datetime(pred_df["timestamp"]).dt.tz_convert(msk_tz)
+        pred_df["fivesec_pred_time"] = pd.to_datetime(pred_df["fivesec_pred_time"]).dt.tz_convert(msk_tz)
+        pred_df = pred_df[pred_df["timestamp"] >= (last_time - time_delta)]
+
+        if len(pred_df) > 1:
+            fivesec_valid = pred_df[pred_df["fivesec_error"].notna()]
+            if not fivesec_valid.empty:
+                mse_fivesec = np.mean(fivesec_valid["fivesec_error"] ** 2)
+                mae_fivesec = np.mean(fivesec_valid["fivesec_error"])
+            pred_count = len(pred_df)
+
+        window_start = last_time - pd.Timedelta(minutes=10)
+        window_df = pred_df[pred_df["timestamp"] >= window_start]
+        if not window_df.empty and 'fivesec_error' in window_df:
+            valid = window_df['fivesec_error'].dropna()
+            if len(valid) >= 5:
+                cached_mae_10min = np.mean(np.abs(valid))
+                logger.debug(f"MAE(10min)={cached_mae_10min:.4f}, Count={len(window_df)}")
+            else:
+                cached_mae_10min = None
+                logger.debug("Insufficient valid data for MAE(10min)")
         else:
-            pred_df = pd.DataFrame()
+            cached_mae_10min = None
+            logger.debug("No data in 10min window for MAE calculation")
+
+        cached_pred_df = pred_df
+        cached_pred_timestamp = last_time
 
     return pred_df, mse_fivesec, mae_fivesec, pred_count, cached_mae_10min
 
@@ -229,7 +212,6 @@ def create_main_figure(df, show_candles, show_error_band, last_time, error_band_
             line=dict(color="blue")
         ))
 
-    # Прогноз на основе последней строки 5-секундных данных
     features = df.iloc[-1][[
         "close", "rsi", "sma", "volume", "log_volume",
         "close_lag_1", "close_lag_2", "close_lag_3",
@@ -296,10 +278,8 @@ def create_prediction_figure(pred_df, mse_fivesec, mae_fivesec, pred_count, last
 
     return pred_fig, pred_style
 
-# Устанавливаем layout до регистрации коллбэков
 dash_app.layout = create_layout()
 
-# Модифицируем update_graph для возврата cached_mae_10min
 @callback(
     Output("main-graph", "figure"),
     Output("predictions-graph-fivesec", "figure"),
@@ -322,7 +302,6 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
     msk_tz = pytz.timezone(config.get("timezone", "Europe/Moscow"))
 
     try:
-        # Обработка relayoutData без лишних конверсий, так как метки уже в MSK
         if main_relayout_data and "xaxis.range[0]" in main_relayout_data:
             try:
                 start = pd.to_datetime(main_relayout_data["xaxis.range[0]"])
@@ -437,7 +416,6 @@ def update_graph(n, show_candles, show_error_band, autoscale_range, main_relayou
 
         logger.debug("Graph updated successfully")
         return fig, pred_fig, pred_style, main_stored_layout, pred_fivesec_stored_layout
-
     except Exception as e:
         logger.error(f"Error in update_graph: {e}", exc_info=True)
         return go.Figure(), go.Figure(), {"display": "none"}, main_stored_layout, pred_fivesec_stored_layout
@@ -463,9 +441,10 @@ def download_data(n_clicks):
     Input("fivesec-train-interval", "value"),
     Input("fivesec-max-depth", "value"),
     Input("fivesec-n_estimators", "value"),
-    Input("fivesec-train-window-seconds", "value")
+    Input("fivesec-train-window-seconds", "value"),
+    Input("csv-write-interval", "value")
 )
-def update_settings(n_clicks, buffer_size, fivesec_train_interval, fivesec_max_depth, fivesec_n_estimators, fivesec_train_window_seconds):
+def update_settings(n_clicks, buffer_size, fivesec_train_interval, fivesec_max_depth, fivesec_n_estimators, fivesec_train_window_seconds, csv_write_interval):
     """Обновление настроек"""
     if n_clicks:
         try:
@@ -475,6 +454,7 @@ def update_settings(n_clicks, buffer_size, fivesec_train_interval, fivesec_max_d
             new_config["model"]["fivesec_max_depth"] = int(fivesec_max_depth) if fivesec_max_depth else new_config["model"]["fivesec_max_depth"]
             new_config["model"]["fivesec_n_estimators"] = int(fivesec_n_estimators) if fivesec_n_estimators else new_config["model"]["fivesec_n_estimators"]
             new_config["model"]["fivesec_train_window_seconds"] = int(fivesec_train_window_seconds) if fivesec_train_window_seconds else new_config["model"]["fivesec_train_window_seconds"]
+            new_config["data"]["csv_write_interval"] = int(csv_write_interval) if csv_write_interval else new_config["data"]["csv_write_interval"]
             save_config(new_config)
             logger.info("Settings saved to config.yaml")
         except Exception as e:
@@ -557,7 +537,6 @@ def start_fivesec_dash():
         logger.error(f"5-second Dash server error: {e}")
         raise
 
-# Явно вызываем layout, чтобы убедиться, что он установлен до запуска
 dash_app.layout = create_layout()
 
 def get_file_reversed(file_path):
@@ -614,30 +593,20 @@ def serve_predictions_log():
 
 @dash_app.server.route(env_config[env_name]["table_endpoint"], methods=['GET'])
 def serve_fivesec_predictions_table():
-    """Возвращает HTML-таблицу с последней записью и MAE(10 мин)"""
+    """Возвращает HTML-таблицу с последней записью и MAE(10 мин) из памяти"""
     try:
         global cached_mae_10min
-        csv_file_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', 'logs', 'fivesec_predictions.csv')
-        )
-        logger.debug(f"Serving fivesec predictions CSV file: {csv_file_path}")
-
-        if not os.path.exists(csv_file_path):
-            logger.error(f"File not found: {csv_file_path}")
-            return Response("Логи отсутствуют", status=404, mimetype='text/plain')
-
         with fivesec_prediction_file_lock:
-            if os.path.getsize(csv_file_path) == 0:
-                logger.error(f"File is empty: {csv_file_path}")
-                return Response("Логи отсутствуют (файл пуст)", status=404, mimetype='text/plain')
-
-            pred_df = pd.read_csv(csv_file_path, encoding='utf-8')
-
-            if pred_df.empty:
-                logger.error(f"File is empty after reading: {csv_file_path}")
+            if not fivesec_predictions:
+                logger.error("fivesec_predictions deque is empty")
                 return Response("Логи отсутствуют", status=404, mimetype='text/plain')
 
-        last_pred = pred_df.iloc[-1]
+            pred_df = pd.DataFrame(list(fivesec_predictions))
+            if pred_df.empty:
+                logger.error("Converted predictions DataFrame is empty")
+                return Response("Логи отсутствуют", status=404, mimetype='text/plain')
+
+            last_pred = pred_df.iloc[-1]
 
         timestamp = pd.to_datetime(last_pred['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         actual_price = round(float(last_pred['actual_price']), 4)
@@ -655,9 +624,7 @@ def serve_fivesec_predictions_table():
         except (ValueError, TypeError):
             fivesec_error_str = ""
 
-        # Форматируем MAE(10 мин)
-        with buffer_lock:  # Добавляем синхронизацию для безопасности
-            mae_10min_str = f"{cached_mae_10min:.4f}" if cached_mae_10min is not None else "..."
+        mae_10min_str = f"{cached_mae_10min:.4f}" if cached_mae_10min is not None else "..."
         logger.debug(f"MAE(10min) for table: {mae_10min_str}")
 
         table_rows = f"""
@@ -677,9 +644,6 @@ def serve_fivesec_predictions_table():
 
         return Response(html_content, mimetype='text/html')
 
-    except pd.errors.EmptyDataError:
-        logger.error(f"File empty or corrupted: {csv_file_path}")
-        return Response("Логи отсутствуют (файл пуст или поврежден)", status=404, mimetype='text/plain')
     except Exception as e:
         logger.error(f"Error serving fivesec predictions: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')

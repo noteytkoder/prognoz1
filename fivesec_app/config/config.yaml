@@ -7,6 +7,7 @@ data:
   download_range: 1hour
   fivesec_train_interval: 60
   min_records: 60
+  csv_write_interval: 30  # Интервал записи в CSV (в секундах)
 model:
   fivesec_max_depth: 25
   fivesec_n_estimators: 250
