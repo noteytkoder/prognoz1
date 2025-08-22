@@ -25,6 +25,19 @@ cached_processed_df = None
 last_buffer_hash = None
 last_csv_write_time = 0  # Для отслеживания времени последней записи в CSV
 
+MAIN_LOOP = None
+SYSTEM_STATE = "RUNNING"   # или "STOPPED"
+INTENTIONAL_STOP = False
+RUNNING_TASKS = []
+RUNNING_TASKS_LOCK = Lock()
+ACTIVE_QUEUE = None
+
+def set_main_loop(loop):
+    """Вызывается из main.py, чтобы сохранить главный asyncio loop"""
+    global MAIN_LOOP
+    MAIN_LOOP = loop
+
+
 def process_timestamp(ms_timestamp):
     """Преобразование миллисекундного таймстемпа в datetime"""
     return pd.to_datetime(ms_timestamp, unit="ms", utc=True).tz_convert(config.get("timezone", "Europe/Moscow"))
@@ -448,24 +461,90 @@ async def update_fivesec_errors_loop(root_dir):
             logger.error(f"Error in update_fivesec_errors_loop: {e}", exc_info=True)
             await asyncio.sleep(5)
 
-async def start_binance_websocket(root_dir):
-    """Запуск WebSocket и всех циклов"""
-    raw_queue = asyncio.Queue(maxsize=10000)
+async def _spawn_all_tasks(root_dir):
+    """Создаёт все фоновые задачи и регистрирует их"""
+    global RUNNING_TASKS, ACTIVE_QUEUE
+    ACTIVE_QUEUE = asyncio.Queue(maxsize=10000)
     fivesec_kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_1s"
 
     tasks = [
-        asyncio.create_task(producer_ws(fivesec_kline_uri, "fivesec_kline", raw_queue)),
-        asyncio.create_task(consumer_loop(raw_queue)),
+        asyncio.create_task(producer_ws(fivesec_kline_uri, "fivesec_kline", ACTIVE_QUEUE)),
+        asyncio.create_task(consumer_loop(ACTIVE_QUEUE)),
         asyncio.create_task(fivesec_prediction_loop(root_dir)),
         asyncio.create_task(fivesec_retrain_loop()),
         asyncio.create_task(update_fivesec_errors_loop(root_dir)),
     ]
-
+    with RUNNING_TASKS_LOCK:
+        RUNNING_TASKS = tasks
     logger.info("All websocket tasks started")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for idx, res in enumerate(results):
-        if isinstance(res, Exception):
-            logger.error(f"Task {idx} raised: {res}", exc_info=True)
-    logger.error("start_binance_websocket exited, creating restart flag")
-    Path(os.path.join(root_dir, "fivesec_restart.flag")).touch()
-    os._exit(0)
+    return tasks
+
+async def start_binance_websocket(root_dir):
+    """Запуск WebSocket и всех циклов"""
+    global SYSTEM_STATE, INTENTIONAL_STOP
+    INTENTIONAL_STOP = False
+    SYSTEM_STATE = "RUNNING"
+
+    tasks = await _spawn_all_tasks(root_dir)
+
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        with RUNNING_TASKS_LOCK:
+            RUNNING_TASKS = []
+
+    # Если не стопнули руками — значит ошибка, рестартуем как раньше
+    if not INTENTIONAL_STOP:
+        logger.error("start_binance_websocket exited unexpectedly, creating restart flag")
+        Path(os.path.join(root_dir, "fivesec_restart.flag")).touch()
+        os._exit(0)
+    else:
+        logger.info("System stopped intentionally — staying down")
+
+async def _stop_system_async():
+    """Асинхронно глушим все задачи"""
+    global INTENTIONAL_STOP, SYSTEM_STATE
+    if SYSTEM_STATE == "STOPPED":
+        logger.info("System already STOPPED")
+        return
+    INTENTIONAL_STOP = True
+    SYSTEM_STATE = "STOPPED"
+
+    with RUNNING_TASKS_LOCK:
+        tasks = list(RUNNING_TASKS)
+    logger.warning(f"Cancelling {len(tasks)} tasks...")
+
+    for t in tasks:
+        try:
+            t.cancel()
+        except Exception as e:
+            logger.error(f"Failed to cancel task {t}: {e}")
+
+    if tasks:
+        _ = await asyncio.gather(*tasks, return_exceptions=True)
+    with RUNNING_TASKS_LOCK:
+        RUNNING_TASKS.clear()
+
+    logger.warning("All tasks cancelled. System is STOPPED.")
+
+async def _resume_system_async(root_dir):
+    """Асинхронно запускаем все задачи заново"""
+    global INTENTIONAL_STOP, SYSTEM_STATE
+    if SYSTEM_STATE == "RUNNING":
+        logger.info("System already RUNNING")
+        return
+    INTENTIONAL_STOP = False
+    SYSTEM_STATE = "RUNNING"
+    await start_binance_websocket(root_dir)
+
+def stop_system():
+    """Вызов из другого треда (например Dash): отмена тасков"""
+    if MAIN_LOOP is None:
+        raise RuntimeError("Main loop not set")
+    asyncio.run_coroutine_threadsafe(_stop_system_async(), MAIN_LOOP)
+
+def resume_system(root_dir):
+    """Вызов из другого треда (например Dash): перезапуск тасков"""
+    if MAIN_LOOP is None:
+        raise RuntimeError("Main loop not set")
+    asyncio.run_coroutine_threadsafe(_resume_system_async(root_dir), MAIN_LOOP)

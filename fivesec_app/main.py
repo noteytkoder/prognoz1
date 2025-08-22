@@ -29,11 +29,18 @@ def run_websocket():
     """Запуск WebSocket в отдельном потоке"""
     try:
         logger.info("Starting WebSocket")
-        asyncio.run(start_binance_websocket(ROOT_DIR))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        from fivesec_app import data_handler
+        data_handler.MAIN_LOOP = loop  # <--- сохраняем loop для stop/resume
+
+        loop.run_until_complete(start_binance_websocket(ROOT_DIR))
     except Exception as e:
         logger.error(f"WebSocket thread error: {e}", exc_info=True)
         RESTART_FLAG.touch()
         sys.exit(1)
+
 
 def run_fivesec_dash():
     """Запуск Dash сервера"""

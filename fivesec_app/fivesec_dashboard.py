@@ -14,6 +14,7 @@ from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
 from flask import Response
+from fivesec_app.data_handler import stop_system, resume_system
 
 cached_mae_10min = None
 config = load_config()
@@ -68,6 +69,9 @@ def create_fivesec_layout():
                     ], value="10min"),
                     html.Button("Скачать данные", id="download-btn"),
                     html.Button("Перезапустить приложение", id="restart-btn", n_clicks=0),
+                    html.Button("Стоп (полный)", id="stop-btn", n_clicks=0,
+            style={"backgroundColor": "#8a0606", "color": "white"}),
+
                 ]),
                 dcc.Tab(label="Настройки", value="settings", children=create_settings_panel()),
             ]),
@@ -647,3 +651,13 @@ def serve_fivesec_predictions_table():
     except Exception as e:
         logger.error(f"Error serving fivesec predictions: {e}", exc_info=True)
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+    
+@callback(
+    Output("stop-btn", "n_clicks"),
+    Input("stop-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def on_stop_clicked(n):
+    logger.warning("STOP button clicked — shutting down system")
+    stop_system()
+    return n
