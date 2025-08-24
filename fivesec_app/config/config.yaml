@@ -3,7 +3,7 @@ auth:
   password: qwerty63
   username: admin
 data:
-  buffer_size: 10000
+  buffer_size: 5000
   download_range: 1hour
   fivesec_train_interval: 60
   min_records: 60

@@ -8,8 +8,8 @@ from fivesec_app.data_handler import start_binance_websocket, fetch_fivesec_hist
 from fivesec_app.fivesec_dashboard import start_fivesec_dash
 from fivesec_app.logger import setup_logger
 from fivesec_app.config_manager import load_config, load_environment_config
-from pathlib import Path
-
+from fivesec_app.data_handler import MAIN_LOOP  # Импортируем MAIN_LOOP
+from fivesec_app import data_handler
 # Установить корневую директорию проекта
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Корень проекта
 os.chdir(os.path.dirname(os.path.abspath(__file__)))  # Текущая директория fivesec_app
@@ -29,11 +29,28 @@ def run_websocket():
     """Запуск WebSocket в отдельном потоке"""
     try:
         logger.info("Starting WebSocket")
-        asyncio.run(start_binance_websocket(ROOT_DIR))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        data_handler.MAIN_LOOP = loop
+        try:
+            loop.run_until_complete(start_binance_websocket(ROOT_DIR))
+        except RuntimeError as e:
+            if "Event loop stopped before Future completed" in str(e):
+                logger.info("WebSocket loop stopped intentionally due to system shutdown")
+            else:
+                logger.error(f"Unexpected RuntimeError in WebSocket loop: {e}", exc_info=True)
+                raise
+        except Exception as e:
+            logger.error(f"WebSocket thread error: {e}", exc_info=True)
+            raise
     except Exception as e:
         logger.error(f"WebSocket thread error: {e}", exc_info=True)
         RESTART_FLAG.touch()
         sys.exit(1)
+    finally:
+        if not loop.is_closed():
+            loop.close()
+            logger.info("WebSocket loop closed in run_websocket")
 
 def run_fivesec_dash():
     """Запуск Dash сервера"""

@@ -9,12 +9,13 @@ from pathlib import Path
 import pytz
 from dash_auth import BasicAuth
 import secrets
-from fivesec_app.data_handler import fivesec_buffer, buffer_lock, calculate_indicators, process_data_for_model
+from fivesec_app.data_handler import fivesec_buffer, buffer_lock, calculate_indicators, process_data_for_model, stop_system
 from fivesec_app.model import predict_fivesec
 from fivesec_app.config_manager import load_config, load_environment_config, save_config
 from fivesec_app.logger import setup_logger
 from flask import Response
 import os
+from fivesec_app import data_handler
 
 config = load_config()
 env_name = config["app_env"]
@@ -68,6 +69,8 @@ def create_fivesec_layout():
                     ], value="10min"),
                     html.Button("Скачать данные", id="download-btn"),
                     html.Button("Перезапустить приложение", id="restart-btn", n_clicks=0),
+                    html.Button("СТОП (полный)", id="stop-btn", n_clicks=0,
+                                style={"backgroundColor": "#aa2222", "color": "white"}),
                 ]),
                 dcc.Tab(label="Настройки", value="settings", children=create_settings_panel()),
             ]),
@@ -560,6 +563,18 @@ def serve_predictions_csv():
     except Exception as e:
         logger.error(f"Error serving predictions.csv: {e}")
         return Response(f"Ошибка: {str(e)}", status=500, mimetype='text/plain')
+
+@callback(
+    Output("stop-btn", "n_clicks"),
+    Input("stop-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def on_stop_clicked(n):
+    """Обработка нажатия кнопки СТОП"""
+    logger.warning("STOP button clicked — shutting down system")
+    stop_system()
+    logger.info(f"System state after stop: {data_handler.SYSTEM_STATE}")
+    return n
 
 @dash_app.server.route(env_config[env_name]["predictions_log_endpoint"], methods=['GET'])
 def serve_predictions_log():

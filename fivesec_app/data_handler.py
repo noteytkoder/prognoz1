@@ -13,6 +13,7 @@ from fivesec_app.config_manager import load_config
 from pathlib import Path
 import os
 
+# Глобальные переменные
 config = load_config()
 logger = setup_logger(log_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"))
 buffer_lock = Lock()
@@ -20,6 +21,62 @@ fivesec_buffer = deque(maxlen=config["data"]["buffer_size"])  # Уменьшен
 fivesec_predictions = []
 fivesec_prediction_file_lock = Lock()
 last_fivesec_train_time = time.time()
+MAIN_LOOP = None  # Глобальная переменная для хранения asyncio event loop
+RUNNING_TASKS = []  # Список для хранения активных задач
+SYSTEM_STATE = "RUNNING"  # Состояние системы: RUNNING или STOPPED
+
+def stop_system():
+    """Прокси-функция для остановки системы из других потоков."""
+    global SYSTEM_STATE
+    if SYSTEM_STATE == "STOPPED":
+        logger.warning("System is already stopped")
+        return
+    if MAIN_LOOP is not None:
+        logger.info("Initiating system stop from stop_system")
+        asyncio.run_coroutine_threadsafe(_stop_system_async(), MAIN_LOOP)
+    else:
+        logger.error("Cannot stop system: MAIN_LOOP is not initialized")
+
+async def _stop_system_async():
+    """Асинхронная функция для остановки всех задач и изменения состояния системы."""
+    global SYSTEM_STATE, RUNNING_TASKS, MAIN_LOOP
+    logger.info("Stopping all async tasks")
+    
+    # Отмена всех активных задач
+    for task in RUNNING_TASKS:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.debug(f"Task {task.get_name()} cancelled")
+            except Exception as e:
+                logger.error(f"Error cancelling task {task.get_name()}: {e}", exc_info=True)
+    
+    # Очистка списка задач
+    RUNNING_TASKS.clear()
+    
+    # Изменение состояния системы
+    SYSTEM_STATE = "STOPPED"
+    logger.info("System state changed to STOPPED")
+    
+    # Закрытие цикла событий с ожиданием завершения всех операций
+    if MAIN_LOOP is not None and MAIN_LOOP.is_running():
+        try:
+            MAIN_LOOP.stop()
+            await MAIN_LOOP.shutdown_asyncgens()
+            await MAIN_LOOP.shutdown_default_executor()
+            MAIN_LOOP.close()
+            logger.info("Event loop closed")
+        except Exception as e:
+            logger.error(f"Error closing event loop: {e}", exc_info=True)
+    elif MAIN_LOOP is not None:
+        logger.debug("Event loop was not running, closing directly")
+        try:
+            MAIN_LOOP.close()
+            logger.info("Event loop closed")
+        except Exception as e:
+            logger.error(f"Error closing event loop: {e}", exc_info=True)
 
 def process_timestamp(ms_timestamp):
     """Преобразование миллисекундного таймстемпа в datetime"""
@@ -442,19 +499,20 @@ async def update_fivesec_errors_loop(root_dir):
 
 async def start_binance_websocket(root_dir):
     """Запуск WebSocket и всех циклов"""
+    global RUNNING_TASKS
     raw_queue = asyncio.Queue(maxsize=10000)
     fivesec_kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_1s"
 
-    tasks = [
-        asyncio.create_task(producer_ws(fivesec_kline_uri, "fivesec_kline", raw_queue)),
-        asyncio.create_task(consumer_loop(raw_queue)),
-        asyncio.create_task(fivesec_prediction_loop(root_dir)),
-        asyncio.create_task(fivesec_retrain_loop()),
-        asyncio.create_task(update_fivesec_errors_loop(root_dir)),
+    RUNNING_TASKS = [
+        asyncio.create_task(producer_ws(fivesec_kline_uri, "fivesec_kline", raw_queue), name="producer_ws"),
+        asyncio.create_task(consumer_loop(raw_queue), name="consumer_loop"),
+        asyncio.create_task(fivesec_prediction_loop(root_dir), name="fivesec_prediction_loop"),
+        asyncio.create_task(fivesec_retrain_loop(), name="fivesec_retrain_loop"),
+        asyncio.create_task(update_fivesec_errors_loop(root_dir), name="update_fivesec_errors_loop"),
     ]
 
     logger.info("All websocket tasks started")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*RUNNING_TASKS, return_exceptions=True)
     for idx, res in enumerate(results):
         if isinstance(res, Exception):
             logger.error(f"Task {idx} raised: {res}", exc_info=True)
