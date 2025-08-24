@@ -36,6 +36,8 @@ def create_online_layout():
                     ], value="full"),
                     html.Button("Скачать данные", id="download-btn"),
                     html.Button("Перезапустить приложение", id="restart-btn", n_clicks=0),
+                    html.Button("СТОП (полный)", id="stop-btn", n_clicks=0,
+                                style={"backgroundColor": "#aa2222", "color": "white"}),
                 ]),
                 dcc.Tab(label="Настройки", value="settings", children=create_settings_panel()),
             ]),

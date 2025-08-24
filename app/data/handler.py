@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 from datetime import datetime, timedelta
 
+# Глобальные переменные
 predictions_logger = setup_predictions_logger()
 prediction_file_lock = Lock()
 hourly_prediction_file_lock = Lock()  # Новая блокировка для часового файла
@@ -39,6 +40,74 @@ last_kline_time = 0
 RESTART_FLAG = Path("restart.flag")
 last_train_time_min = time.time()
 last_train_time_hour = time.time()
+MAIN_LOOP = None  # Глобальная переменная для хранения asyncio event loop
+RUNNING_TASKS = []  # Список для хранения активных задач
+SYSTEM_STATE = "RUNNING"  # Состояние системы: RUNNING или STOPPED
+
+def stop_system():
+    """Прокси-функция для остановки системы из других потоков."""
+    global SYSTEM_STATE
+    logger.debug(f"stop_system called, SYSTEM_STATE={SYSTEM_STATE}, MAIN_LOOP={'set' if MAIN_LOOP is not None else 'not set'}")
+    if SYSTEM_STATE == "STOPPED":
+        logger.warning("System is already stopped")
+        return
+    if MAIN_LOOP is not None:
+        logger.info("Initiating system stop from stop_system")
+        try:
+            future = asyncio.run_coroutine_threadsafe(_stop_system_async(), MAIN_LOOP)
+            future.result(timeout=10)  # Ждем завершения с таймаутом
+            logger.debug("stop_system: Successfully completed _stop_system_async")
+        except Exception as e:
+            logger.error(f"Error scheduling stop_system: {e}", exc_info=True)
+    else:
+        logger.error("Cannot stop system: MAIN_LOOP is not initialized. Forcing system shutdown.")
+        RESTART_FLAG.touch()
+        os._exit(1)
+
+async def _stop_system_async():
+    """Асинхронная функция для остановки всех задач и изменения состояния системы."""
+    global SYSTEM_STATE, RUNNING_TASKS, MAIN_LOOP
+    logger.info(f"Stopping all async tasks, {len(RUNNING_TASKS)} tasks active")
+    
+    # Отмена всех активных задач
+    for task in RUNNING_TASKS:
+        if not task.done():
+            logger.debug(f"Cancelling task {task.get_name()}")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.debug(f"Task {task.get_name()} cancelled")
+            except Exception as e:
+                logger.error(f"Error cancelling task {task.get_name()}: {e}", exc_info=True)
+    
+    # Очистка списка задач
+    RUNNING_TASKS.clear()
+    logger.debug("All tasks cleared")
+    
+    # Изменение состояния системы
+    SYSTEM_STATE = "STOPPED"
+    logger.info("System state changed to STOPPED")
+    
+    # Закрытие цикла событий
+    if MAIN_LOOP is not None and MAIN_LOOP.is_running():
+        try:
+            MAIN_LOOP.stop()
+            await MAIN_LOOP.shutdown_asyncgens()
+            await MAIN_LOOP.shutdown_default_executor()
+            MAIN_LOOP.close()
+            logger.info("Event loop closed")
+        except Exception as e:
+            logger.error(f"Error closing event loop: {e}", exc_info=True)
+    elif MAIN_LOOP is not None:
+        logger.debug("Event loop was not running, closing directly")
+        try:
+            MAIN_LOOP.close()
+            logger.info("Event loop closed")
+        except Exception as e:
+            logger.error(f"Error closing event loop: {e}", exc_info=True)
+    else:
+        logger.warning("MAIN_LOOP was None during _stop_system_async")
 
 def process_timestamp(timestamp_ms):
     """Преобразование времени в MSK"""
@@ -669,19 +738,20 @@ async def start_binance_websocket():
     kline_uri = f"wss://stream.binance.com:443/ws/btcusdt@kline_{interval}"
     trade_uri = "wss://stream.binance.com:443/ws/btcusdt@aggTrade"
 
-    tasks = [
-        asyncio.create_task(producer_ws(kline_uri, "kline", raw_queue)),
-        asyncio.create_task(producer_ws(trade_uri, "aggTrade", raw_queue)),
-        asyncio.create_task(consumer_loop(raw_queue)),
-        asyncio.create_task(watchdog()),
-        asyncio.create_task(prediction_loop()),
-        asyncio.create_task(hourly_prediction_loop()),  # Новая задача
-        asyncio.create_task(update_errors_loop()),
-        asyncio.create_task(retrain_loop())
+    global RUNNING_TASKS
+    RUNNING_TASKS = [
+        asyncio.create_task(producer_ws(kline_uri, "kline", raw_queue), name="producer_kline"),
+        asyncio.create_task(producer_ws(trade_uri, "aggTrade", raw_queue), name="producer_aggTrade"),
+        asyncio.create_task(consumer_loop(raw_queue), name="consumer_loop"),
+        asyncio.create_task(watchdog(), name="watchdog"),
+        asyncio.create_task(prediction_loop(), name="prediction_loop"),
+        asyncio.create_task(hourly_prediction_loop(), name="hourly_prediction_loop"),
+        asyncio.create_task(update_errors_loop(), name="update_errors_loop"),
+        asyncio.create_task(retrain_loop(), name="retrain_loop")
     ]
 
     logger.info("All websocket tasks started")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*RUNNING_TASKS, return_exceptions=True)
     for idx, res in enumerate(results):
         if isinstance(res, Exception):
             logger.error(f"Task {idx} raised: {res}", exc_info=True)

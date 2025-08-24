@@ -15,8 +15,8 @@ import platform
 import psutil
 from pathlib import Path
 from app.logs.logger import setup_logger
-from app.data.handler import buffer_lock
 import pytz
+from app.data.handler import buffer_lock, stop_system, SYSTEM_STATE, MAIN_LOOP
 
 RESTART_FLAG = Path("restart.flag")
 logger = setup_logger()
@@ -459,6 +459,20 @@ def update_settings(n_clicks, buffer_size, rsi_window, sma_window, update_interv
             logger.error(f"Error in update_settings: {e}", exc_info=True)
             raise
     return n_clicks
+
+@callback(
+    Output("stop-btn", "n_clicks"),
+    Input("stop-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def on_stop_clicked(n):
+    """Обработка нажатия кнопки СТОП"""
+    from app.data.handler import SYSTEM_STATE, MAIN_LOOP
+    logger.warning("STOP button clicked — shutting down system")
+    logger.debug(f"System state before stop: {SYSTEM_STATE}, MAIN_LOOP={'set' if MAIN_LOOP is not None else 'not set'}")
+    stop_system()
+    logger.info(f"System state after stop: {SYSTEM_STATE}")
+    return n
 
 @callback(
     Output("restart-btn", "n_clicks"),
